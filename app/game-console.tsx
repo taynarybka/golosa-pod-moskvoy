@@ -169,6 +169,17 @@ function MapPanel({ game, setGame, addLog, onCloseSafe }: { game: GameState; set
   const uniqueNames = useMemo(() => [...new Set(nodes.map((n) => n.name))].sort((a, b) => a.localeCompare(b, "ru")), []);
 
   const fit = () => setTransform(FIT);
+  const zoomBy = (factor: number) => {
+    setTransform((current) => {
+      const k = Math.max(.28, Math.min(7, current.k * factor));
+      const ratio = k / current.k;
+      return {
+        k,
+        x: WIDTH / 2 - (WIDTH / 2 - current.x) * ratio,
+        y: HEIGHT / 2 - (HEIGHT / 2 - current.y) * ratio,
+      };
+    });
+  };
   const centerNode = (id: string) => {
     const node = byId.get(id); if (!node) return;
     setTransform({ k: 2.7, x: WIDTH / 2 - node.x * 2.7, y: HEIGHT / 2 - node.y * 2.7 });
@@ -256,7 +267,12 @@ function MapPanel({ game, setGame, addLog, onCloseSafe }: { game: GameState; set
 
       <div className="map-stage">
         <div className="map-caption"><div><span className="live-dot" /> Оперативная схема</div><div className="legend"><span><i className="start" /> старт</span><span><i className="safe" /> безопасен</span><span><i className="unknown" /> непонятный</span><span><i className="closed" /> закрыт</span></div></div>
-        <svg className="metro-map" viewBox={`0 0 ${WIDTH} ${HEIGHT}`} onWheel={(event) => { event.preventDefault(); const factor = Math.exp(-event.deltaY * .0012); setTransform((t) => ({ ...t, k: Math.max(.28, Math.min(7, t.k * factor)) })); }} onPointerDown={(e) => { drag.current = { x: e.clientX, y: e.clientY, tx: transform.x, ty: transform.y }; e.currentTarget.setPointerCapture(e.pointerId); }} onPointerMove={(e) => { if (!drag.current) return; const rect = e.currentTarget.getBoundingClientRect(); setTransform((t) => ({ ...t, x: drag.current!.tx + (e.clientX - drag.current!.x) * WIDTH / rect.width, y: drag.current!.ty + (e.clientY - drag.current!.y) * HEIGHT / rect.height })); }} onPointerUp={() => { drag.current = null; }}>
+        <div className="map-zoom" aria-label="Управление масштабом карты">
+          <button type="button" onClick={() => zoomBy(1.3)} aria-label="Увеличить карту" title="Увеличить карту">+</button>
+          <button type="button" onClick={() => zoomBy(1 / 1.3)} aria-label="Уменьшить карту" title="Уменьшить карту">−</button>
+          <button type="button" className="map-zoom-fit" onClick={fit} aria-label="Показать карту целиком" title="Показать карту целиком">Всё</button>
+        </div>
+        <svg className="metro-map" viewBox={`0 0 ${WIDTH} ${HEIGHT}`} onWheel={(event) => { event.preventDefault(); zoomBy(Math.exp(-event.deltaY * .0012)); }} onPointerDown={(e) => { drag.current = { x: e.clientX, y: e.clientY, tx: transform.x, ty: transform.y }; e.currentTarget.setPointerCapture(e.pointerId); }} onPointerMove={(e) => { if (!drag.current) return; const rect = e.currentTarget.getBoundingClientRect(); setTransform((t) => ({ ...t, x: drag.current!.tx + (e.clientX - drag.current!.x) * WIDTH / rect.width, y: drag.current!.ty + (e.clientY - drag.current!.y) * HEIGHT / rect.height })); }} onPointerUp={() => { drag.current = null; }}>
           <defs><filter id="glow"><feGaussianBlur stdDeviation="2.2" result="blur" /><feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge></filter><marker id="track-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="4" markerHeight="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="#172019" /></marker></defs>
           <g transform={`translate(${transform.x} ${transform.y}) scale(${transform.k})`}>
             {edges.filter((edge) => edge.type === "transfer").map((edge) => { const a = byId.get(edge.source)!; const b = byId.get(edge.target)!; return <line key={edge.id} x1={a.x} y1={a.y} x2={b.x} y2={b.y} className="edge transfer" />; })}
@@ -264,7 +280,7 @@ function MapPanel({ game, setGame, addLog, onCloseSafe }: { game: GameState; set
             {nodes.map((node) => { const count = npcRoster.filter(([id]) => game.npcPositions[id] === node.id).length; const isPolis = /библиотека им/i.test(node.name); const isStart = startNodeIds.has(node.id); return <g key={node.id} transform={`translate(${node.x} ${node.y})`} className={`station ${selected === node.id ? "selected" : ""} ${isPolis ? "polis" : ""} ${branchNodeIds.has(node.id) ? "branch" : ""} ${isStart ? "start" : ""}`} onPointerDown={(e) => e.stopPropagation()} onClick={() => selectNode(node.id)}>{branchNodeIds.has(node.id) && <rect className="branch-ring" x="-8" y="-8" width="16" height="16" transform="rotate(45)" />}{isStart && <circle className="start-ring" r="9" />}<circle r={isPolis ? 7 : 4.5} fill={node.color} />{count > 0 && <><circle className="npc-badge" cx="7" cy="-7" r="6" /><text className="npc-count" x="7" y="-7">{count}</text></>} {(transform.k > 2.25 || selected === node.id || isPolis || isStart) && <text className="station-name" x="8" y="-7">{isPolis ? `ПОЛИС · ${node.name}` : isStart ? `СТАРТ · ${node.name}` : node.name}</text>}</g>; })}
           </g>
         </svg>
-        <div className="map-footer"><span>Перетаскивайте карту · колесо мыши меняет масштаб</span><div><button onClick={exportState}>Экспорт</button><label className="file-button">Импорт<input type="file" accept="application/json" onChange={(e) => importState(e.target.files?.[0])} /></label></div></div>
+        <div className="map-footer"><span>Перетаскивайте карту · колесо мыши или +/− меняют масштаб</span><div><button onClick={exportState}>Экспорт</button><label className="file-button">Импорт<input type="file" accept="application/json" onChange={(e) => importState(e.target.files?.[0])} /></label></div></div>
       </div>
     </section>
   );
