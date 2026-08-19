@@ -51,6 +51,88 @@ const startNodeIds = new Set([
   "7::рязанский проспект", "8::новокосино", "9::бибирево", "9::пражская",
   "10::верхние лихоборы", "10::люблино", "8A::говорово", "15::стахановская",
 ]);
+const startBriefs: Record<string, { distance: number; history: string; branch: string }> = {
+  "1::бульвар рокоссовского": {
+    distance: 8,
+    history: "После Удара здесь выжили путейцы старого депо и семьи из ближайших домов. Они меняют медную проволоку на еду и первыми слышат всё, что спускается с поверхности по вентиляции.",
+    branch: "Красная ветка — старая прямая магистраль с крепкими общинами и самым понятным путём к центру.",
+  },
+  "1::румянцево": {
+    distance: 10,
+    history: "Складские подвалы у станции стали зерновым резервом юго-запада. Недавно из закрытого вентиляционного короба начали отвечать голоса, которых никто не передавал по радио.",
+    branch: "Красная ветка знаменита непрерывной дорогой к Полису, но южный участок длинный и требует много припасов.",
+  },
+  "2::речной вокзал": {
+    distance: 9,
+    history: "Жители научились читать уровень воды по запаху и скрипу обшивки. Местные лодочники проводят отряды через подтопленные служебные ходы, но никогда не выходят в тоннель ночью.",
+    branch: "Зелёная ветка — речной торговый путь: здесь лучшие проводники по воде, а затопления меняют маршруты без предупреждения.",
+  },
+  "2::царицыно": {
+    distance: 9,
+    history: "В тёплых технических помещениях выращивают лекарственные травы и кормовые водоросли. За право пользоваться теплицами спорят две семьи, поэтому чужаков встречают вежливо, но с оружием.",
+    branch: "Зелёная ветка знаменита продовольственными караванами, сыростью и дорогими переправами через южные тоннели.",
+  },
+  "3::щелковская": {
+    distance: 9,
+    history: "Из деталей старых автобусов здесь собирают тележки, броню и печи. Восточный караул пропускает путников только после короткого допроса о том, что они слышали во сне.",
+    branch: "Синяя ветка — глубокая оборонная линия с мастерскими, оружейниками и суровыми пропускными постами.",
+  },
+  "3::волоколамская": {
+    distance: 10,
+    history: "Широкий пустой зал превратили в дозорную станцию, где любой звук разносится слишком далеко. Дежурные уверяют, что иногда по закрытому пути проходит поезд без света и машиниста.",
+    branch: "Синяя ветка знаменита глубиной и военными запасами; она надёжна, но её западные перегоны длинны и безлюдны.",
+  },
+  "6::новые черемушки": {
+    distance: 8,
+    history: "Здесь поселились инженеры водоочистки и врачи из окрестных клиник. Станция выдаёт чистую воду по карточкам, а за украденный фильтр навсегда закрывает ворота.",
+    branch: "Оранжевая ветка — научный коридор метро: фильтры, лаборатории и точные карты ценятся здесь выше оружия.",
+  },
+  "7::тушинская": {
+    distance: 9,
+    history: "Механики с бывшего аэродрома шьют защитные костюмы из прорезиненной ткани и чинят всё, что имеет двигатель. Их главная тайна — запас топлива, которого официально не существует.",
+    branch: "Фиолетовая ветка знаменита скоростью караванов, запчастями и постоянными спорами между далёкими окраинами.",
+  },
+  "7::рязанский проспект": {
+    distance: 8,
+    history: "Восточные челноки сделали станцию шумным перевалочным рынком. Здесь можно купить почти всё, но каждая сделка проходит через посредника, который запоминает лица и долги.",
+    branch: "Фиолетовая ветка — длинная торговая артерия; на ней легко найти попутчиков и так же легко оказаться частью чужой политики.",
+  },
+  "8::новокосино": {
+    distance: 8,
+    history: "Община обжигает керамические фильтры и хранит батареи в сухих кабельных колодцах. По ночам на стенах появляется белая пыль, похожая на россыпь риса, хотя склады заперты.",
+    branch: "Жёлтая ветка знаменита рынками Китай-города, белыми патронами-«рисом» и короткими, богатыми маршрутами к центру.",
+  },
+  "9::бибирево": {
+    distance: 10,
+    history: "Северяне ведут строгий учёт еды, воздуха и времени, сохранив архив старых рационов. Опоздавшему каравану не открывают гермоворота, даже если снаружи остались свои.",
+    branch: "Серая ветка — территория дисциплины, колодцев и картографов; безопасные сведения здесь всегда имеют цену.",
+  },
+  "9::пражская": {
+    distance: 10,
+    history: "Южный зал превратился в пёстрый рынок, где старые вывески служат гербами торговых домов. Местные собирают рассказы путников и рисуют самую подробную карту исчезающих тоннелей.",
+    branch: "Серая ветка знаменита разведчиками и точными маршрутами, но путь с её окраин долгий и требует терпения.",
+  },
+  "10::верхние лихоборы": {
+    distance: 9,
+    history: "Холодный воздух из глубоких шахт питает коптильни и предупреждает о перемене погоды наверху. Смотрители вентиляции слышат Голос раньше остальных и считают это профессиональной болезнью.",
+    branch: "Салатовая ветка — линия вентиляции и подземных ферм, известная тайными обходами и нестабильным воздухом.",
+  },
+  "10::люблино": {
+    distance: 9,
+    history: "Складские тоннели заняли грибники и ремонтные бригады из депо. Община сыта, но каждый путник обязан отработать смену или оставить часть припасов.",
+    branch: "Салатовая ветка знаменита грибными фермами, дешёвым ремонтом и сетью служебных ходов неизвестной надёжности.",
+  },
+  "8A::говорово": {
+    distance: 9,
+    history: "Новая станция пережила катастрофу почти нетронутой и до сих пор включает свет по старому расписанию. За закрытыми дверями автоматика продолжает выполнять приказ, которого никто не может прочесть.",
+    branch: "Солнцевская ветка — молодая технологичная линия с автономными системами, гермозонами и множеством запертых помещений.",
+  },
+  "15::стахановская": {
+    distance: 6,
+    history: "Строительные бригады укрепили недостроенные служебные камеры и превратили их в крепость. Они знают короткий путь к центру, но каждый месяц часть старых распорок приходится менять.",
+    branch: "Розовая ветка знаменита строителями и короткими восточными обходами; путь быстр, зато обвалы случаются чаще.",
+  },
+};
 const initialState: GameState = { round: 1, time: "Утро", npcPositions: initialNpcPositions, npcMoveRounds: { gm: 0, role: -1 }, edges: initialEdges, notes: {}, log: ["Партия создана. Утро. Голоса зовут к Полису."] };
 
 const challenges = [
@@ -161,6 +243,7 @@ function MapPanel({ game, setGame, addLog, onCloseSafe }: { game: GameState; set
   const [transform, setTransform] = useState<Transform>(FIT);
   const drag = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null);
   const selectedNode = selected ? byId.get(selected) : undefined;
+  const selectedStart = selectedNode ? startBriefs[selectedNode.id] : undefined;
   const selectedTrack = selected ? parseTrack(selected) : undefined;
   const selectedEdge = selectedTrack ? tunnelEdges.find((e) => e.id === selectedTrack.edgeId) : undefined;
   const npcHere = selectedNode ? npcRoster.filter(([id]) => game.npcPositions[id] === selectedNode.id) : [];
@@ -256,7 +339,7 @@ function MapPanel({ game, setGame, addLog, onCloseSafe }: { game: GameState; set
         <section className="side-section grow">
           <p className="side-label">Выбрано</p>
           {!selectedNode && !selectedEdge && <div className="empty-selection"><span>⌁</span><p>Ничего не выбрано</p></div>}
-          {selectedNode && <div className="selection-card"><span className="line-chip" style={{ background: selectedNode.color }}>{selectedNode.lineId}</span>{branchNodeIds.has(selectedNode.id) && <span className="branch-chip">развилка</span>}{startNodeIds.has(selectedNode.id) && <span className="start-chip">старт</span>}<h3>{selectedNode.name}</h3><p>{selectedNode.lineName}</p><dl><div><dt>NPC</dt><dd>{npcHere.length}</dd></div><div><dt>Ходовых тоннелей</dt><dd>{tunnelEdges.filter((e) => e.source === selectedNode.id || e.target === selectedNode.id).length * 2}</dd></div></dl>{npcHere.length > 0 && <div className="npc-list"><span>NPC остаются на станции</span>{npcHere.map(([id, name]) => <div key={id} className="npc-actions"><button className={movingNpcId === id ? "npc-row active" : "npc-row"} onClick={() => { setMode("npc"); setMovingNpcId(id); }}>{name}<b>↗</b></button><button className="reserve-return" onClick={() => returnNpcToReserve(id)} title="Вернуть в резерв">×</button></div>)}</div>}{reserveNpcs.length > 0 && <div className="npc-place"><span>Разместить из резерва</span><select value={reserveNpcId} onChange={(e) => setReserveNpcId(e.target.value)}>{reserveNpcs.map(([id, name]) => <option key={id} value={id}>{name}</option>)}</select><button onClick={placeNpc}>Поставить на станцию</button></div>}{movingNpcId && <div className="npc-move"><div className="move-source"><button className={moveSource === "gm" ? "active" : ""} onClick={() => setMoveSource("gm")}>ГМ · 1/раунд</button><button className={moveSource === "role" ? "active" : ""} onClick={() => setMoveSource("role")}>Роль · раз/2 хода</button></div><p>Куда переместить на один перегон:</p>{adjacentStations.map((station) => <button key={station.id} onClick={() => moveNpc(station.id)}>{station.name}</button>)}</div>}<textarea placeholder="Заметка ведущего…" value={game.notes[selectedNode.id] || ""} onChange={(e) => setGame((g) => ({ ...g, notes: { ...g.notes, [selectedNode.id]: e.target.value } }))} /></div>}
+          {selectedNode && <div className="selection-card"><span className="line-chip" style={{ background: selectedNode.color }}>{selectedNode.lineId}</span>{branchNodeIds.has(selectedNode.id) && <span className="branch-chip">развилка</span>}{startNodeIds.has(selectedNode.id) && <span className="start-chip">старт</span>}<h3>{selectedNode.name}</h3><p>{selectedNode.lineName}</p><dl><div><dt>NPC</dt><dd>{npcHere.length}</dd></div><div><dt>Ходовых тоннелей</dt><dd>{tunnelEdges.filter((e) => e.source === selectedNode.id || e.target === selectedNode.id).length * 2}</dd></div></dl>{selectedStart && <section className="start-brief"><div className="start-distance"><span>До Полиса</span><strong>{selectedStart.distance}</strong><small>{selectedStart.distance < 5 ? "хода" : "ходов"}</small></div><div><h4>История станции</h4><p>{selectedStart.history}</p><h4>Чем знаменита ветка</h4><p>{selectedStart.branch}</p><small>Кратчайший путь по базовому графу. Перекрытия и события увеличивают расстояние.</small></div></section>}{npcHere.length > 0 && <div className="npc-list"><span>NPC остаются на станции</span>{npcHere.map(([id, name]) => <div key={id} className="npc-actions"><button className={movingNpcId === id ? "npc-row active" : "npc-row"} onClick={() => { setMode("npc"); setMovingNpcId(id); }}>{name}<b>↗</b></button><button className="reserve-return" onClick={() => returnNpcToReserve(id)} title="Вернуть в резерв">×</button></div>)}</div>}{reserveNpcs.length > 0 && <div className="npc-place"><span>Разместить из резерва</span><select value={reserveNpcId} onChange={(e) => setReserveNpcId(e.target.value)}>{reserveNpcs.map(([id, name]) => <option key={id} value={id}>{name}</option>)}</select><button onClick={placeNpc}>Поставить на станцию</button></div>}{movingNpcId && <div className="npc-move"><div className="move-source"><button className={moveSource === "gm" ? "active" : ""} onClick={() => setMoveSource("gm")}>ГМ · 1/раунд</button><button className={moveSource === "role" ? "active" : ""} onClick={() => setMoveSource("role")}>Роль · раз/2 хода</button></div><p>Куда переместить на один перегон:</p>{adjacentStations.map((station) => <button key={station.id} onClick={() => moveNpc(station.id)}>{station.name}</button>)}</div>}<textarea placeholder="Заметка ведущего…" value={game.notes[selectedNode.id] || ""} onChange={(e) => setGame((g) => ({ ...g, notes: { ...g.notes, [selectedNode.id]: e.target.value } }))} /></div>}
           {selectedEdge && selectedTrack && <div className="selection-card"><span className={`edge-chip ${game.edges[trackKey(selectedEdge.id, selectedTrack.direction)] || "normal"}`}>{markLabel(game.edges[trackKey(selectedEdge.id, selectedTrack.direction)])}</span><h3>{trackName(selectedEdge, selectedTrack.direction)}</h3><p>{selectedEdge.lineName} · отдельный ходовой тоннель</p>{game.edges[trackKey(selectedEdge.id, selectedTrack.direction)] === "unknown" && <button className="primary full" onClick={reveal}>Разведать публично</button>}</div>}
         </section>
         <section className="side-section">
