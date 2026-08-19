@@ -6,10 +6,14 @@ import { metroData } from "./metro-data";
 type Tab = "map" | "wheel" | "death" | "log";
 type Mode = "inspect" | "npc" | "safe" | "unknown" | "closed";
 type EdgeMark = "normal" | "safe" | "unknown" | "closed";
+type TimeOfDay = "Утро" | "День" | "Вечер" | "Ночь";
+type Direction = "forward" | "backward";
 type Transform = { x: number; y: number; k: number };
 type GameState = {
   round: number;
-  npc: Record<string, number>;
+  time: TimeOfDay;
+  npcPositions: Record<string, string>;
+  npcMoveRounds: { gm: number; role: number };
   edges: Record<string, EdgeMark>;
   notes: Record<string, string>;
   log: string[];
@@ -29,8 +33,25 @@ const bounds = {
 const fitScale = Math.min(WIDTH / (bounds.x1 - bounds.x0 + 140), HEIGHT / (bounds.y1 - bounds.y0 + 140), 1.2);
 const FIT: Transform = { k: fitScale, x: WIDTH / 2 - fitScale * (bounds.x0 + bounds.x1) / 2, y: HEIGHT / 2 - fitScale * (bounds.y0 + bounds.y1) / 2 };
 const tunnelEdges = edges.filter((e) => e.type !== "transfer");
-const initialEdges = Object.fromEntries(edges.filter((e) => e.closedByReality).map((e) => [e.id, "closed"])) as Record<string, EdgeMark>;
-const initialState: GameState = { round: 1, npc: {}, edges: initialEdges, notes: {}, log: ["Партия создана. Голоса зовут к Полису."] };
+const trackKey = (edgeId: string, direction: Direction) => `${edgeId}::${direction}`;
+const initialEdges = Object.fromEntries(tunnelEdges.flatMap((e) => e.closedByReality ? [[trackKey(e.id, "forward"), "closed"], [trackKey(e.id, "backward"), "closed"]] : [])) as Record<string, EdgeMark>;
+const npcRoster = [
+  ["npc-01", "Тихон Путеец"], ["npc-02", "Майя Радио"], ["npc-03", "Сыч"], ["npc-04", "Доктор Ким"],
+  ["npc-05", "Лада"], ["npc-06", "Фома Крысолов"], ["npc-07", "Вера Гидролог"], ["npc-08", "Блик"],
+  ["npc-09", "Марта Таможня"], ["npc-10", "Егор Печник"], ["npc-11", "Сестра Лея"], ["npc-12", "Шрам"],
+  ["npc-13", "Аркадий Архив"], ["npc-14", "Нина Челнок"], ["npc-15", "Соня Проводник"], ["npc-16", "Дед Север"],
+  ["npc-17", "Юра Часовщик"], ["npc-18", "Комиссар Рута"], ["npc-19", "Господин Чай"], ["npc-20", "Аглая"],
+  ["npc-21", "Механик Дрон"], ["npc-22", "Рахим"], ["npc-23", "Моль"], ["npc-24", "Инга Нулевая"], ["npc-25", "Отец Пепел"],
+] as const;
+const initialNpcPositions: Record<string, string> = {};
+const branchNodeIds = new Set(nodes.filter((node) => tunnelEdges.filter((edge) => edge.source === node.id || edge.target === node.id).length > 2).map((node) => node.id));
+const startNodeIds = new Set([
+  "1::бульвар рокоссовского", "1::румянцево", "2::речной вокзал", "2::царицыно",
+  "3::щелковская", "3::волоколамская", "6::новые черемушки", "7::тушинская",
+  "7::рязанский проспект", "8::новокосино", "9::бибирево", "9::пражская",
+  "10::верхние лихоборы", "10::люблино", "8A::говорово", "15::стахановская",
+]);
+const initialState: GameState = { round: 1, time: "Утро", npcPositions: initialNpcPositions, npcMoveRounds: { gm: 0, role: -1 }, edges: initialEdges, notes: {}, log: ["Партия создана. Утро. Голоса зовут к Полису."] };
 
 const challenges = [
   { kind: "Угроза", text: "Стая идёт по следу. Оставьте 2 риса или получите рану." },
@@ -63,8 +84,8 @@ const darkForms = [
 function loadState(): GameState {
   if (typeof window === "undefined") return initialState;
   try {
-    const parsed = JSON.parse(localStorage.getItem("metro-game-console-v1") || "null");
-    return parsed ? { ...initialState, ...parsed, edges: { ...initialEdges, ...(parsed.edges || {}) } } : initialState;
+    const parsed = JSON.parse(localStorage.getItem("metro-game-console-v3") || "null");
+    return parsed ? { ...initialState, ...parsed, npcPositions: { ...initialNpcPositions, ...(parsed.npcPositions || {}) }, npcMoveRounds: { ...initialState.npcMoveRounds, ...(parsed.npcMoveRounds || {}) }, edges: { ...initialEdges, ...(parsed.edges || {}) } } : initialState;
   } catch { return initialState; }
 }
 
@@ -73,7 +94,7 @@ export function GameConsole() {
   const [game, setGame] = useState<GameState>(initialState);
   const [hydrated, setHydrated] = useState(false);
   useEffect(() => { setGame(loadState()); setHydrated(true); }, []);
-  useEffect(() => { if (hydrated) localStorage.setItem("metro-game-console-v1", JSON.stringify(game)); }, [game, hydrated]);
+  useEffect(() => { if (hydrated) localStorage.setItem("metro-game-console-v3", JSON.stringify(game)); }, [game, hydrated]);
 
   const addLog = useCallback((message: string) => {
     const stamp = new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
@@ -84,14 +105,17 @@ export function GameConsole() {
     setGame((g) => ({ ...g, round: g.round + 1, log: [`Раунд ${g.round + 1} начался. Караваны делают ${g.round % 2 ? "ход" : "остановку"}.`, ...g.log] }));
   };
 
-  const closeRandomSafe = () => {
-    const candidates = tunnelEdges.filter((e) => game.edges[e.id] === "safe");
-    if (!candidates.length) { addLog("Нет безопасных тоннелей, которые можно закрыть."); return; }
-    const chosen = candidates[Math.floor(Math.random() * candidates.length)];
-    setGame((g) => ({ ...g, edges: { ...g.edges, [chosen.id]: "closed" }, log: [`Безопасный тоннель закрыт: ${edgeName(chosen)}.`, ...g.log] }));
+  const advanceTime = () => {
+    const cycle: TimeOfDay[] = ["Утро", "День", "Вечер", "Ночь"];
+    setGame((g) => { const time = cycle[(cycle.indexOf(g.time) + 1) % cycle.length]; return { ...g, time, log: [`Общее время: ${time}.${time === "Ночь" ? " Риск смертельного исхода повышен." : ""}`, ...g.log] }; });
   };
 
-  const totalNpc = Object.values(game.npc).reduce((sum, value) => sum + value, 0);
+  const closeRandomSafe = () => {
+    const candidates = tunnelEdges.flatMap((edge) => (["forward", "backward"] as Direction[]).map((direction) => ({ edge, direction, key: trackKey(edge.id, direction) }))).filter((track) => game.edges[track.key] === "safe");
+    if (!candidates.length) { addLog("Нет безопасных тоннелей, которые можно закрыть."); return; }
+    const chosen = candidates[Math.floor(Math.random() * candidates.length)];
+    setGame((g) => ({ ...g, edges: { ...g.edges, [chosen.key]: "closed" }, log: [`Безопасный ходовой тоннель закрыт: ${trackName(chosen.edge, chosen.direction)}.`, ...g.log] }));
+  };
 
   return (
     <main className="shell">
@@ -101,6 +125,7 @@ export function GameConsole() {
           <div><p className="eyebrow">Пульт ведущего · Москва, 2030</p><h1>Голоса под Москвой</h1></div>
         </div>
         <div className="round-control">
+          <button className={`time-button ${game.time === "Ночь" ? "night" : ""}`} onClick={advanceTime}><span>Общее время</span><b>{game.time}</b></button>
           <span>Раунд</span><strong>{String(game.round).padStart(2, "0")}</strong>
           <button className="primary" onClick={nextRound}>Следующий раунд <span>→</span></button>
         </div>
@@ -114,8 +139,8 @@ export function GameConsole() {
         <div className="status"><span className="pulse" /> партия сохранена на устройстве</div>
       </nav>
 
-      {tab === "map" && <MapPanel game={game} setGame={setGame} addLog={addLog} onCloseSafe={closeRandomSafe} totalNpc={totalNpc} />}
-      {tab === "wheel" && <WheelPanel addLog={addLog} />}
+      {tab === "map" && <MapPanel game={game} setGame={setGame} addLog={addLog} onCloseSafe={closeRandomSafe} />}
+      {tab === "wheel" && <WheelPanel addLog={addLog} time={game.time} />}
       {tab === "death" && <DeathPanel addLog={addLog} />}
       {tab === "log" && <LogPanel game={game} setGame={setGame} />}
     </main>
@@ -126,14 +151,21 @@ function TabButton({ active, onClick, icon, children }: { active: boolean; onCli
   return <button className={active ? "tab active" : "tab"} onClick={onClick}><span aria-hidden="true">{icon}</span>{children}</button>;
 }
 
-function MapPanel({ game, setGame, addLog, onCloseSafe, totalNpc }: { game: GameState; setGame: React.Dispatch<React.SetStateAction<GameState>>; addLog: (s: string) => void; onCloseSafe: () => void; totalNpc: number }) {
+function MapPanel({ game, setGame, addLog, onCloseSafe }: { game: GameState; setGame: React.Dispatch<React.SetStateAction<GameState>>; addLog: (s: string) => void; onCloseSafe: () => void }) {
   const [mode, setMode] = useState<Mode>("inspect");
   const [selected, setSelected] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const [movingNpcId, setMovingNpcId] = useState<string | null>(null);
+  const [reserveNpcId, setReserveNpcId] = useState<string>(npcRoster[0][0]);
+  const [moveSource, setMoveSource] = useState<"gm" | "role">("gm");
   const [transform, setTransform] = useState<Transform>(FIT);
   const drag = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null);
   const selectedNode = selected ? byId.get(selected) : undefined;
-  const selectedEdge = selected ? edges.find((e) => e.id === selected) : undefined;
+  const selectedTrack = selected ? parseTrack(selected) : undefined;
+  const selectedEdge = selectedTrack ? tunnelEdges.find((e) => e.id === selectedTrack.edgeId) : undefined;
+  const npcHere = selectedNode ? npcRoster.filter(([id]) => game.npcPositions[id] === selectedNode.id) : [];
+  const reserveNpcs = npcRoster.filter(([id]) => !game.npcPositions[id]);
+  const adjacentStations = movingNpcId && selectedNode ? tunnelEdges.filter((edge) => edge.source === selectedNode.id || edge.target === selectedNode.id).map((edge) => byId.get(edge.source === selectedNode.id ? edge.target : edge.source)!).filter((node, index, all) => all.findIndex((other) => other.id === node.id) === index) : [];
   const uniqueNames = useMemo(() => [...new Set(nodes.map((n) => n.name))].sort((a, b) => a.localeCompare(b, "ru")), []);
 
   const fit = () => setTransform(FIT);
@@ -146,21 +178,40 @@ function MapPanel({ game, setGame, addLog, onCloseSafe, totalNpc }: { game: Game
     const found = nodes.find((n) => n.name.toLowerCase().replaceAll("ё", "е").includes(q));
     if (found) { setSelected(found.id); centerNode(found.id); }
   };
-  const selectNode = (id: string) => {
+  const selectNode = (id: string) => { setSelected(id); if (mode !== "npc") setMovingNpcId(null); };
+  const selectTrack = (edge: typeof tunnelEdges[number], direction: Direction) => {
+    const id = trackKey(edge.id, direction);
     setSelected(id);
-    if (mode === "npc") {
-      setGame((g) => ({ ...g, npc: { ...g.npc, [id]: ((g.npc[id] || 0) + 1) % 4 } }));
-    }
-  };
-  const selectEdge = (id: string) => {
-    setSelected(id);
-    const edge = edges.find((e) => e.id === id); if (!edge || edge.type === "transfer" || mode === "inspect" || mode === "npc") return;
+    if (mode === "inspect" || mode === "npc") return;
     const mark: EdgeMark = mode;
     setGame((g) => ({ ...g, edges: { ...g.edges, [id]: g.edges[id] === mark ? "normal" : mark } }));
   };
   const reveal = () => {
-    if (!selectedEdge) return;
-    setGame((g) => ({ ...g, edges: { ...g.edges, [selectedEdge.id]: "normal" }, log: [`Разведан тоннель: ${edgeName(selectedEdge)}. Информация теперь общая.`, ...g.log] }));
+    if (!selectedEdge || !selectedTrack) return;
+    const key = trackKey(selectedEdge.id, selectedTrack.direction);
+    setGame((g) => ({ ...g, edges: { ...g.edges, [key]: "normal" }, log: [`Разведан тоннель: ${trackName(selectedEdge, selectedTrack.direction)}. Информация теперь общая.`, ...g.log] }));
+  };
+  const moveNpc = (targetStationId: string) => {
+    if (!movingNpcId || !selectedNode) return;
+    const npc = npcRoster.find(([id]) => id === movingNpcId); if (!npc) return;
+    const gmUsed = game.npcMoveRounds.gm === game.round;
+    const roleUsed = game.round - game.npcMoveRounds.role < 2;
+    if ((moveSource === "gm" && gmUsed) || (moveSource === "role" && roleUsed)) { addLog(moveSource === "gm" ? "ГМ уже двигал NPC в этом раунде." : "Способность перемещения NPC ещё не восстановилась."); return; }
+    const target = byId.get(targetStationId)!;
+    setGame((g) => ({ ...g, npcPositions: { ...g.npcPositions, [movingNpcId]: targetStationId }, npcMoveRounds: { ...g.npcMoveRounds, [moveSource]: g.round }, log: [`${moveSource === "gm" ? "ГМ" : "Способность роли"}: ${npc[1]} перемещён ${selectedNode.name} → ${target.name}.`, ...g.log] }));
+    setSelected(targetStationId); setMovingNpcId(null);
+  };
+  const placeNpc = () => {
+    if (!selectedNode || !reserveNpcId || game.npcPositions[reserveNpcId]) return;
+    const npc = npcRoster.find(([id]) => id === reserveNpcId); if (!npc) return;
+    setGame((g) => ({ ...g, npcPositions: { ...g.npcPositions, [reserveNpcId]: selectedNode.id }, log: [`Подготовка: ${npc[1]} размещён на станции ${selectedNode.name}.`, ...g.log] }));
+    const next = reserveNpcs.find(([id]) => id !== reserveNpcId);
+    setReserveNpcId(next?.[0] || "");
+  };
+  const returnNpcToReserve = (npcId: string) => {
+    const npc = npcRoster.find(([id]) => id === npcId); if (!npc) return;
+    setGame((g) => { const npcPositions = { ...g.npcPositions }; delete npcPositions[npcId]; return { ...g, npcPositions, log: [`Подготовка: ${npc[1]} возвращён в резерв.`, ...g.log] }; });
+    setMovingNpcId(null); setReserveNpcId(npcId);
   };
   const exportState = () => {
     const blob = new Blob([JSON.stringify(game, null, 2)], { type: "application/json" });
@@ -180,10 +231,10 @@ function MapPanel({ game, setGame, addLog, onCloseSafe, totalNpc }: { game: Game
             <ModeButton mode="inspect" current={mode} set={setMode} icon="⌖" label="Осмотр" />
             <ModeButton mode="npc" current={mode} set={setMode} icon="♙" label="NPC" />
             <ModeButton mode="safe" current={mode} set={setMode} icon="✓" label="Безопасен" />
-            <ModeButton mode="unknown" current={mode} set={setMode} icon="?" label="Неизвестен" />
+            <ModeButton mode="unknown" current={mode} set={setMode} icon="?" label="Непонятный" />
             <ModeButton mode="closed" current={mode} set={setMode} icon="×" label="Закрыт" />
           </div>
-          <p className="hint">{mode === "npc" ? "Нажимайте станцию: 0 → 1 → 2 → 3 NPC." : mode === "inspect" ? "Выберите станцию или тоннель, чтобы увидеть сведения." : "Нажимайте тоннели, чтобы поставить или снять метку."}</p>
+          <p className="hint">{mode === "npc" ? "Выберите станцию и конкретного NPC. Самостоятельно NPC не перемещаются." : mode === "inspect" ? "Выберите станцию или один из двух направленных тоннелей." : "Метка ставится на один ходовой тоннель, а не на весь перегон."}</p>
         </section>
         <section className="side-section">
           <label className="side-label" htmlFor="station-search">Найти станцию</label>
@@ -194,22 +245,23 @@ function MapPanel({ game, setGame, addLog, onCloseSafe, totalNpc }: { game: Game
         <section className="side-section grow">
           <p className="side-label">Выбрано</p>
           {!selectedNode && !selectedEdge && <div className="empty-selection"><span>⌁</span><p>Ничего не выбрано</p></div>}
-          {selectedNode && <div className="selection-card"><span className="line-chip" style={{ background: selectedNode.color }}>{selectedNode.lineId}</span><h3>{selectedNode.name}</h3><p>{selectedNode.lineName}</p><dl><div><dt>NPC</dt><dd>{game.npc[selectedNode.id] || 0}</dd></div><div><dt>Связей</dt><dd>{edges.filter((e) => e.source === selectedNode.id || e.target === selectedNode.id).length}</dd></div></dl><textarea placeholder="Заметка ведущего…" value={game.notes[selectedNode.id] || ""} onChange={(e) => setGame((g) => ({ ...g, notes: { ...g.notes, [selectedNode.id]: e.target.value } }))} /></div>}
-          {selectedEdge && <div className="selection-card"><span className={`edge-chip ${game.edges[selectedEdge.id] || "normal"}`}>{selectedEdge.type === "transfer" ? "Переход" : markLabel(game.edges[selectedEdge.id])}</span><h3>{edgeName(selectedEdge)}</h3><p>{selectedEdge.lineName}</p>{game.edges[selectedEdge.id] === "unknown" && <button className="primary full" onClick={reveal}>Разведать публично</button>}</div>}
+          {selectedNode && <div className="selection-card"><span className="line-chip" style={{ background: selectedNode.color }}>{selectedNode.lineId}</span>{branchNodeIds.has(selectedNode.id) && <span className="branch-chip">развилка</span>}{startNodeIds.has(selectedNode.id) && <span className="start-chip">старт</span>}<h3>{selectedNode.name}</h3><p>{selectedNode.lineName}</p><dl><div><dt>NPC</dt><dd>{npcHere.length}</dd></div><div><dt>Ходовых тоннелей</dt><dd>{tunnelEdges.filter((e) => e.source === selectedNode.id || e.target === selectedNode.id).length * 2}</dd></div></dl>{npcHere.length > 0 && <div className="npc-list"><span>NPC остаются на станции</span>{npcHere.map(([id, name]) => <div key={id} className="npc-actions"><button className={movingNpcId === id ? "npc-row active" : "npc-row"} onClick={() => { setMode("npc"); setMovingNpcId(id); }}>{name}<b>↗</b></button><button className="reserve-return" onClick={() => returnNpcToReserve(id)} title="Вернуть в резерв">×</button></div>)}</div>}{reserveNpcs.length > 0 && <div className="npc-place"><span>Разместить из резерва</span><select value={reserveNpcId} onChange={(e) => setReserveNpcId(e.target.value)}>{reserveNpcs.map(([id, name]) => <option key={id} value={id}>{name}</option>)}</select><button onClick={placeNpc}>Поставить на станцию</button></div>}{movingNpcId && <div className="npc-move"><div className="move-source"><button className={moveSource === "gm" ? "active" : ""} onClick={() => setMoveSource("gm")}>ГМ · 1/раунд</button><button className={moveSource === "role" ? "active" : ""} onClick={() => setMoveSource("role")}>Роль · раз/2 хода</button></div><p>Куда переместить на один перегон:</p>{adjacentStations.map((station) => <button key={station.id} onClick={() => moveNpc(station.id)}>{station.name}</button>)}</div>}<textarea placeholder="Заметка ведущего…" value={game.notes[selectedNode.id] || ""} onChange={(e) => setGame((g) => ({ ...g, notes: { ...g.notes, [selectedNode.id]: e.target.value } }))} /></div>}
+          {selectedEdge && selectedTrack && <div className="selection-card"><span className={`edge-chip ${game.edges[trackKey(selectedEdge.id, selectedTrack.direction)] || "normal"}`}>{markLabel(game.edges[trackKey(selectedEdge.id, selectedTrack.direction)])}</span><h3>{trackName(selectedEdge, selectedTrack.direction)}</h3><p>{selectedEdge.lineName} · отдельный ходовой тоннель</p>{game.edges[trackKey(selectedEdge.id, selectedTrack.direction)] === "unknown" && <button className="primary full" onClick={reveal}>Разведать публично</button>}</div>}
         </section>
         <section className="side-section">
-          <div className="stat-line"><span>Станций</span><strong>{nodes.length}</strong></div><div className="stat-line"><span>Тоннелей</span><strong>{tunnelEdges.length}</strong></div><div className="stat-line"><span>NPC на карте</span><strong>{totalNpc} / 25</strong></div>
+          <div className="stat-line"><span>Станций</span><strong>{nodes.length}</strong></div><div className="stat-line"><span>Ходовых тоннелей</span><strong>{tunnelEdges.length * 2}</strong></div><div className="stat-line"><span>Стартовых точек</span><strong>{startNodeIds.size}</strong></div><div className="stat-line"><span>NPC на карте / в резерве</span><strong>{npcRoster.length - reserveNpcs.length} / {reserveNpcs.length}</strong></div>
           <button className="danger-line" onClick={onCloseSafe}>Закрыть случайный безопасный</button>
         </section>
       </aside>
 
       <div className="map-stage">
-        <div className="map-caption"><div><span className="live-dot" /> Оперативная схема</div><div className="legend"><span><i className="safe" /> безопасен</span><span><i className="unknown" /> неизвестен</span><span><i className="closed" /> закрыт</span></div></div>
+        <div className="map-caption"><div><span className="live-dot" /> Оперативная схема</div><div className="legend"><span><i className="start" /> старт</span><span><i className="safe" /> безопасен</span><span><i className="unknown" /> непонятный</span><span><i className="closed" /> закрыт</span></div></div>
         <svg className="metro-map" viewBox={`0 0 ${WIDTH} ${HEIGHT}`} onWheel={(event) => { event.preventDefault(); const factor = Math.exp(-event.deltaY * .0012); setTransform((t) => ({ ...t, k: Math.max(.28, Math.min(7, t.k * factor)) })); }} onPointerDown={(e) => { drag.current = { x: e.clientX, y: e.clientY, tx: transform.x, ty: transform.y }; e.currentTarget.setPointerCapture(e.pointerId); }} onPointerMove={(e) => { if (!drag.current) return; const rect = e.currentTarget.getBoundingClientRect(); setTransform((t) => ({ ...t, x: drag.current!.tx + (e.clientX - drag.current!.x) * WIDTH / rect.width, y: drag.current!.ty + (e.clientY - drag.current!.y) * HEIGHT / rect.height })); }} onPointerUp={() => { drag.current = null; }}>
-          <defs><filter id="glow"><feGaussianBlur stdDeviation="2.2" result="blur" /><feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge></filter></defs>
+          <defs><filter id="glow"><feGaussianBlur stdDeviation="2.2" result="blur" /><feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge></filter><marker id="track-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="4" markerHeight="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="#172019" /></marker></defs>
           <g transform={`translate(${transform.x} ${transform.y}) scale(${transform.k})`}>
-            {edges.map((edge) => { const a = byId.get(edge.source)!; const b = byId.get(edge.target)!; const mark = game.edges[edge.id] || "normal"; return <line key={edge.id} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={edge.color} className={`edge ${edge.type} ${mark} ${selected === edge.id ? "selected" : ""}`} onPointerDown={(e) => e.stopPropagation()} onClick={() => selectEdge(edge.id)} />; })}
-            {nodes.map((node) => { const count = game.npc[node.id] || 0; const isPolis = /библиотека им/i.test(node.name); return <g key={node.id} transform={`translate(${node.x} ${node.y})`} className={`station ${selected === node.id ? "selected" : ""} ${isPolis ? "polis" : ""}`} onPointerDown={(e) => e.stopPropagation()} onClick={() => selectNode(node.id)}><circle r={isPolis ? 7 : 4.5} fill={node.color} />{count > 0 && <><circle className="npc-badge" cx="7" cy="-7" r="6" /><text className="npc-count" x="7" y="-7">{count}</text></>} {(transform.k > 2.25 || selected === node.id || isPolis) && <text className="station-name" x="8" y="-7">{isPolis ? `ПОЛИС · ${node.name}` : node.name}</text>}</g>; })}
+            {edges.filter((edge) => edge.type === "transfer").map((edge) => { const a = byId.get(edge.source)!; const b = byId.get(edge.target)!; return <line key={edge.id} x1={a.x} y1={a.y} x2={b.x} y2={b.y} className="edge transfer" />; })}
+            {tunnelEdges.flatMap((edge) => (["forward", "backward"] as Direction[]).map((direction) => { const geometry = trackGeometry(edge, direction); const key = trackKey(edge.id, direction); const mark = game.edges[key] || "normal"; return <line key={key} x1={geometry.x1} y1={geometry.y1} x2={geometry.x2} y2={geometry.y2} stroke={edge.color} markerEnd="url(#track-arrow)" className={`edge track ${mark} ${selected === key ? "selected" : ""}`} onPointerDown={(e) => e.stopPropagation()} onClick={() => selectTrack(edge, direction)} />; }))}
+            {nodes.map((node) => { const count = npcRoster.filter(([id]) => game.npcPositions[id] === node.id).length; const isPolis = /библиотека им/i.test(node.name); const isStart = startNodeIds.has(node.id); return <g key={node.id} transform={`translate(${node.x} ${node.y})`} className={`station ${selected === node.id ? "selected" : ""} ${isPolis ? "polis" : ""} ${branchNodeIds.has(node.id) ? "branch" : ""} ${isStart ? "start" : ""}`} onPointerDown={(e) => e.stopPropagation()} onClick={() => selectNode(node.id)}>{branchNodeIds.has(node.id) && <rect className="branch-ring" x="-8" y="-8" width="16" height="16" transform="rotate(45)" />}{isStart && <circle className="start-ring" r="9" />}<circle r={isPolis ? 7 : 4.5} fill={node.color} />{count > 0 && <><circle className="npc-badge" cx="7" cy="-7" r="6" /><text className="npc-count" x="7" y="-7">{count}</text></>} {(transform.k > 2.25 || selected === node.id || isPolis || isStart) && <text className="station-name" x="8" y="-7">{isPolis ? `ПОЛИС · ${node.name}` : isStart ? `СТАРТ · ${node.name}` : node.name}</text>}</g>; })}
           </g>
         </svg>
         <div className="map-footer"><span>Перетаскивайте карту · колесо мыши меняет масштаб</span><div><button onClick={exportState}>Экспорт</button><label className="file-button">Импорт<input type="file" accept="application/json" onChange={(e) => importState(e.target.files?.[0])} /></label></div></div>
@@ -220,12 +272,15 @@ function MapPanel({ game, setGame, addLog, onCloseSafe, totalNpc }: { game: Game
 
 function ModeButton({ mode, current, set, icon, label }: { mode: Mode; current: Mode; set: (m: Mode) => void; icon: string; label: string }) { return <button className={current === mode ? "mode active" : "mode"} onClick={() => set(mode)}><span>{icon}</span>{label}</button>; }
 function edgeName(edge: typeof edges[number]) { return `${byId.get(edge.source)?.name} — ${byId.get(edge.target)?.name}`; }
-function markLabel(mark?: EdgeMark) { return mark === "safe" ? "Безопасен" : mark === "unknown" ? "Неизвестен" : mark === "closed" ? "Закрыт" : "Обычный"; }
+function trackName(edge: typeof tunnelEdges[number], direction: Direction) { const from = direction === "forward" ? byId.get(edge.source) : byId.get(edge.target); const to = direction === "forward" ? byId.get(edge.target) : byId.get(edge.source); return `${from?.name} → ${to?.name}`; }
+function parseTrack(value: string) { if (value.endsWith("::forward")) return { edgeId: value.slice(0, -9), direction: "forward" as Direction }; if (value.endsWith("::backward")) return { edgeId: value.slice(0, -10), direction: "backward" as Direction }; return undefined; }
+function trackGeometry(edge: typeof tunnelEdges[number], direction: Direction) { const a = byId.get(edge.source)!; const b = byId.get(edge.target)!; const dx = b.x - a.x; const dy = b.y - a.y; const length = Math.max(1, Math.hypot(dx, dy)); const nx = -dy / length * 3.8; const ny = dx / length * 3.8; return direction === "forward" ? { x1: a.x + nx, y1: a.y + ny, x2: b.x + nx, y2: b.y + ny } : { x1: b.x - nx, y1: b.y - ny, x2: a.x - nx, y2: a.y - ny }; }
+function markLabel(mark?: EdgeMark) { return mark === "safe" ? "Открыт · безопасен" : mark === "unknown" ? "Непонятный" : mark === "closed" ? "Закрыт" : "Открытый"; }
 
-function WheelPanel({ addLog }: { addLog: (s: string) => void }) {
+function WheelPanel({ addLog, time }: { addLog: (s: string) => void; time: TimeOfDay }) {
   const [rotation, setRotation] = useState(0); const [spinning, setSpinning] = useState(false); const [result, setResult] = useState<(typeof challenges)[number] | null>(null);
   const spin = () => { if (spinning) return; const index = Math.floor(Math.random() * challenges.length); const next = rotation + 1440 + (360 - index * 30) + 15; setSpinning(true); setRotation(next); setTimeout(() => { setResult(challenges[index]); setSpinning(false); addLog(`Колесо: ${challenges[index].kind} — ${challenges[index].text}`); }, 1650); };
-  return <section className="tool-page"><div className="tool-intro"><p className="eyebrow">Тоннельный модуль</p><h2>Колесо испытаний</h2><p>Крутите один раз при входе в опасный или неизвестный перегон. Результат задаёт сцену, но последнее решение остаётся за ведущим.</p></div><div className="wheel-grid"><div className="wheel-wrap"><div className="pointer">▼</div><div className="wheel" style={{ transform: `rotate(${rotation}deg)` }}>{challenges.map((item, i) => <span key={i} style={{ transform: `rotate(${i * 30 + 15}deg) translateY(-138px)` }}>{i + 1}</span>)}</div><button className="wheel-button" onClick={spin} disabled={spinning}>{spinning ? "…" : "КРУТИТЬ"}</button></div><div className="result-panel"><p className="side-label">Результат</p>{result ? <><span className="result-kind">{result.kind}</span><h3>{result.text}</h3><div className="result-actions"><button onClick={() => setResult(null)}>Сбросить</button><button className="primary" onClick={spin}>Ещё раз</button></div></> : <div className="result-empty"><strong>Колесо ждёт</strong><p>На нём 12 коротких событий: угроза, ресурс, контакт, аномалия и моральный выбор.</p></div>}<div className="rule-note"><span>Правило риска</span><p>Ставка 0–3 «рисинки». Чистый успех возвращает ставку; тяжёлое последствие забирает её в банк.</p></div></div></div></section>;
+  return <section className="tool-page"><div className="tool-intro"><p className="eyebrow">Тоннельный модуль · общее время: {time}</p><h2>Колесо испытаний</h2><p>Крутите один раз при входе в опасный или неизвестный перегон. Результат задаёт сцену, но последнее решение остаётся за ведущим.</p>{time === "Ночь" && <div className="night-warning">Ночь: при тяжёлом последствии добавьте один жетон риска. Станции становятся безопасной тактической паузой.</div>}</div><div className="wheel-grid"><div className="wheel-wrap"><div className="pointer">▼</div><div className="wheel" style={{ transform: `rotate(${rotation}deg)` }}>{challenges.map((item, i) => <span key={i} style={{ transform: `rotate(${i * 30 + 15}deg) translateY(-138px)` }}>{i + 1}</span>)}</div><button className="wheel-button" onClick={spin} disabled={spinning}>{spinning ? "…" : "КРУТИТЬ"}</button></div><div className="result-panel"><p className="side-label">Результат</p>{result ? <><span className="result-kind">{result.kind}</span><h3>{result.text}</h3><div className="result-actions"><button onClick={() => setResult(null)}>Сбросить</button><button className="primary" onClick={spin}>Ещё раз</button></div></> : <div className="result-empty"><strong>Колесо ждёт</strong><p>На нём 12 коротких событий: угроза, ресурс, контакт, аномалия и моральный выбор.</p></div>}<div className="rule-note"><span>Правило риска</span><p>Ставка 0–3 «рисинки». Чистый успех возвращает ставку; тяжёлое последствие забирает её в банк.</p></div></div></div></section>;
 }
 
 function DeathPanel({ addLog }: { addLog: (s: string) => void }) {
