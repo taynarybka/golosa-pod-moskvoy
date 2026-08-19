@@ -22,6 +22,12 @@ const HEIGHT = 900;
 const nodes = rawNodes.map((n) => ({ ...n, x: WIDTH / 2 + (n.lng - 37.62) * 3200, y: HEIGHT / 2 + (55.75 - n.lat) * 5200 }));
 const edges = rawEdges;
 const byId = new Map(nodes.map((n) => [n.id, n]));
+const bounds = {
+  x0: Math.min(...nodes.map((n) => n.x)), x1: Math.max(...nodes.map((n) => n.x)),
+  y0: Math.min(...nodes.map((n) => n.y)), y1: Math.max(...nodes.map((n) => n.y)),
+};
+const fitScale = Math.min(WIDTH / (bounds.x1 - bounds.x0 + 140), HEIGHT / (bounds.y1 - bounds.y0 + 140), 1.2);
+const FIT: Transform = { k: fitScale, x: WIDTH / 2 - fitScale * (bounds.x0 + bounds.x1) / 2, y: HEIGHT / 2 - fitScale * (bounds.y0 + bounds.y1) / 2 };
 const tunnelEdges = edges.filter((e) => e.type !== "transfer");
 const initialEdges = Object.fromEntries(edges.filter((e) => e.closedByReality).map((e) => [e.id, "closed"])) as Record<string, EdgeMark>;
 const initialState: GameState = { round: 1, npc: {}, edges: initialEdges, notes: {}, log: ["Партия создана. Голоса зовут к Полису."] };
@@ -124,13 +130,13 @@ function MapPanel({ game, setGame, addLog, onCloseSafe, totalNpc }: { game: Game
   const [mode, setMode] = useState<Mode>("inspect");
   const [selected, setSelected] = useState<string | null>(null);
   const [search, setSearch] = useState("");
-  const [transform, setTransform] = useState<Transform>({ x: 132, y: 96, k: .76 });
+  const [transform, setTransform] = useState<Transform>(FIT);
   const drag = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null);
   const selectedNode = selected ? byId.get(selected) : undefined;
   const selectedEdge = selected ? edges.find((e) => e.id === selected) : undefined;
   const uniqueNames = useMemo(() => [...new Set(nodes.map((n) => n.name))].sort((a, b) => a.localeCompare(b, "ru")), []);
 
-  const fit = () => setTransform({ x: 132, y: 96, k: .76 });
+  const fit = () => setTransform(FIT);
   const centerNode = (id: string) => {
     const node = byId.get(id); if (!node) return;
     setTransform({ k: 2.7, x: WIDTH / 2 - node.x * 2.7, y: HEIGHT / 2 - node.y * 2.7 });
