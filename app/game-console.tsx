@@ -3,15 +3,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { metroData } from "./metro-data";
 
-type Tab = "map" | "wheel" | "death" | "log";
+type Tab = "map" | "players" | "wheel" | "death" | "log";
 type Mode = "inspect" | "npc" | "safe" | "unknown" | "closed";
 type EdgeMark = "normal" | "safe" | "unknown" | "closed";
 type TimeOfDay = "Утро" | "День" | "Вечер" | "Ночь";
 type Direction = "forward" | "backward";
 type Transform = { x: number; y: number; k: number };
+type PlayerState = { name: string; health: number };
 type GameState = {
   round: number;
   time: TimeOfDay;
+  players: PlayerState[];
   npcPositions: Record<string, string>;
   npcMoveRounds: { gm: number; role: number };
   edges: Record<string, EdgeMark>;
@@ -133,7 +135,8 @@ const startBriefs: Record<string, { distance: number; history: string; branch: s
     branch: "Розовая ветка знаменита строителями и короткими восточными обходами; путь быстр, зато обвалы случаются чаще.",
   },
 };
-const initialState: GameState = { round: 1, time: "Утро", npcPositions: initialNpcPositions, npcMoveRounds: { gm: 0, role: -1 }, edges: initialEdges, notes: {}, log: ["Партия создана. Утро. Голоса зовут к Полису."] };
+const initialPlayers: PlayerState[] = Array.from({ length: 12 }, (_, index) => ({ name: `Игрок ${String(index + 1).padStart(2, "0")}`, health: 10 }));
+const initialState: GameState = { round: 1, time: "Утро", players: initialPlayers, npcPositions: initialNpcPositions, npcMoveRounds: { gm: 0, role: -1 }, edges: initialEdges, notes: {}, log: ["Партия создана. Утро. Голоса зовут к Полису."] };
 
 const challenges = [
   { kind: "Угроза", text: "Стая идёт по следу. Оставьте 2 риса или получите рану." },
@@ -167,7 +170,7 @@ function loadState(): GameState {
   if (typeof window === "undefined") return initialState;
   try {
     const parsed = JSON.parse(localStorage.getItem("metro-game-console-v3") || "null");
-    return parsed ? { ...initialState, ...parsed, npcPositions: { ...initialNpcPositions, ...(parsed.npcPositions || {}) }, npcMoveRounds: { ...initialState.npcMoveRounds, ...(parsed.npcMoveRounds || {}) }, edges: { ...initialEdges, ...(parsed.edges || {}) } } : initialState;
+    return parsed ? { ...initialState, ...parsed, players: initialPlayers.map((player, index) => ({ ...player, ...(parsed.players?.[index] || {}) })), npcPositions: { ...initialNpcPositions, ...(parsed.npcPositions || {}) }, npcMoveRounds: { ...initialState.npcMoveRounds, ...(parsed.npcMoveRounds || {}) }, edges: { ...initialEdges, ...(parsed.edges || {}) } } : initialState;
   } catch { return initialState; }
 }
 
@@ -215,6 +218,7 @@ export function GameConsole() {
 
       <nav className="tabs" aria-label="Разделы пульта">
         <TabButton active={tab === "map"} onClick={() => setTab("map")} icon="⌘">Карта</TabButton>
+        <TabButton active={tab === "players"} onClick={() => setTab("players")} icon="♥">Игроки</TabButton>
         <TabButton active={tab === "wheel"} onClick={() => setTab("wheel")} icon="◉">Колесо испытаний</TabButton>
         <TabButton active={tab === "death"} onClick={() => setTab("death")} icon="◇">После смерти</TabButton>
         <TabButton active={tab === "log"} onClick={() => setTab("log")} icon="≡">Журнал <b>{game.log.length}</b></TabButton>
@@ -222,6 +226,7 @@ export function GameConsole() {
       </nav>
 
       {tab === "map" && <MapPanel game={game} setGame={setGame} addLog={addLog} onCloseSafe={closeRandomSafe} />}
+      {tab === "players" && <PlayersPanel game={game} setGame={setGame} addLog={addLog} />}
       {tab === "wheel" && <WheelPanel addLog={addLog} time={game.time} />}
       {tab === "death" && <DeathPanel addLog={addLog} />}
       {tab === "log" && <LogPanel game={game} setGame={setGame} />}
@@ -375,6 +380,21 @@ function trackName(edge: typeof tunnelEdges[number], direction: Direction) { con
 function parseTrack(value: string) { if (value.endsWith("::forward")) return { edgeId: value.slice(0, -9), direction: "forward" as Direction }; if (value.endsWith("::backward")) return { edgeId: value.slice(0, -10), direction: "backward" as Direction }; return undefined; }
 function trackGeometry(edge: typeof tunnelEdges[number], direction: Direction) { const a = byId.get(edge.source)!; const b = byId.get(edge.target)!; const dx = b.x - a.x; const dy = b.y - a.y; const length = Math.max(1, Math.hypot(dx, dy)); const nx = -dy / length * 3.8; const ny = dx / length * 3.8; return direction === "forward" ? { x1: a.x + nx, y1: a.y + ny, x2: b.x + nx, y2: b.y + ny } : { x1: b.x - nx, y1: b.y - ny, x2: a.x - nx, y2: a.y - ny }; }
 function markLabel(mark?: EdgeMark) { return mark === "safe" ? "Открыт · безопасен" : mark === "unknown" ? "Непонятный" : mark === "closed" ? "Закрыт" : "Открытый"; }
+
+function PlayersPanel({ game, setGame, addLog }: { game: GameState; setGame: React.Dispatch<React.SetStateAction<GameState>>; addLog: (s: string) => void }) {
+  const updatePlayer = (index: number, patch: Partial<PlayerState>) => {
+    setGame((current) => ({ ...current, players: current.players.map((player, playerIndex) => playerIndex === index ? { ...player, ...patch } : player) }));
+  };
+  const adjustHealth = (index: number, delta: number) => {
+    const player = game.players[index];
+    const health = Math.max(0, Math.min(10, player.health + delta));
+    updatePlayer(index, { health });
+    if (health === 0 && player.health > 0) addLog(`${player.name} потерял последнее сердце.`);
+  };
+  const restoreAll = () => setGame((current) => ({ ...current, players: current.players.map((player) => ({ ...player, health: 10 })), log: ["Здоровье всех игроков восстановлено до 10.", ...current.log] }));
+
+  return <section className="tool-page players-page"><div className="tool-intro"><p className="eyebrow">Состояние отрядов</p><h2>Жизни игроков</h2><p>У каждого персонажа 10 сердец. Нажмите на сердце, чтобы сразу выставить нужное значение, или используйте кнопки − и + для точного изменения.</p></div><div className="players-toolbar"><span>Живы: <strong>{game.players.filter((player) => player.health > 0).length}</strong> / {game.players.length}</span><button onClick={restoreAll}>Восстановить всех</button></div><div className="players-grid">{game.players.map((player, index) => <article className={`player-card ${player.health === 0 ? "dead" : player.health <= 3 ? "critical" : ""}`} key={index}><div className="player-head"><span>{String(index + 1).padStart(2, "0")}</span><input value={player.name} aria-label={`Имя игрока ${index + 1}`} onChange={(event) => updatePlayer(index, { name: event.target.value })} /><strong>{player.health === 0 ? "Мёртв" : `${player.health}/10`}</strong></div><div className="hearts" aria-label={`${player.health} из 10 сердец`}>{Array.from({ length: 10 }, (_, heartIndex) => <button type="button" className={heartIndex < player.health ? "heart active" : "heart"} key={heartIndex} onClick={() => updatePlayer(index, { health: heartIndex + 1 })} aria-label={`Установить ${heartIndex + 1} сердец`}>♥</button>)}</div><div className="health-actions"><button onClick={() => adjustHealth(index, -1)} disabled={player.health === 0} aria-label={`Снять сердце у ${player.name}`}>−</button><span>{player.health === 0 ? "перейдите к разделу «После смерти»" : player.health <= 3 ? "критическое состояние" : "состояние стабильно"}</span><button onClick={() => adjustHealth(index, 1)} disabled={player.health === 10} aria-label={`Вернуть сердце ${player.name}`}>+</button></div></article>)}</div></section>;
+}
 
 function WheelPanel({ addLog, time }: { addLog: (s: string) => void; time: TimeOfDay }) {
   const [rotation, setRotation] = useState(0); const [spinning, setSpinning] = useState(false); const [result, setResult] = useState<(typeof challenges)[number] | null>(null);
