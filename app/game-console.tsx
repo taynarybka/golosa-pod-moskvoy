@@ -9,7 +9,8 @@ type EdgeMark = "normal" | "safe" | "unknown" | "closed";
 type TimeOfDay = "Утро" | "День" | "Вечер" | "Ночь";
 type Direction = "forward" | "backward";
 type Transform = { x: number; y: number; k: number };
-type PlayerState = { name: string; health: number };
+type Limb = "leftArm" | "rightArm" | "leftLeg" | "rightLeg";
+type PlayerState = { name: string; health: number; lostLimbs: Limb[] };
 type GameState = {
   round: number;
   time: TimeOfDay;
@@ -135,7 +136,13 @@ const startBriefs: Record<string, { distance: number; history: string; branch: s
     branch: "Розовая ветка знаменита строителями и короткими восточными обходами; путь быстр, зато обвалы случаются чаще.",
   },
 };
-const initialPlayers: PlayerState[] = Array.from({ length: 12 }, (_, index) => ({ name: `Игрок ${String(index + 1).padStart(2, "0")}`, health: 10 }));
+const limbOptions: { id: Limb; label: string; short: string }[] = [
+  { id: "leftArm", label: "Левая рука", short: "Л · рука" },
+  { id: "rightArm", label: "Правая рука", short: "П · рука" },
+  { id: "leftLeg", label: "Левая нога", short: "Л · нога" },
+  { id: "rightLeg", label: "Правая нога", short: "П · нога" },
+];
+const initialPlayers: PlayerState[] = Array.from({ length: 12 }, (_, index) => ({ name: `Игрок ${String(index + 1).padStart(2, "0")}`, health: 10, lostLimbs: [] }));
 const initialState: GameState = { round: 1, time: "Утро", players: initialPlayers, npcPositions: initialNpcPositions, npcMoveRounds: { gm: 0, role: -1 }, edges: initialEdges, notes: {}, log: ["Партия создана. Утро. Голоса зовут к Полису."] };
 
 const challenges = [
@@ -157,7 +164,7 @@ const lightForms = [
   ["Эхо-проводник", "Ходит один по любым тоннелям; раз за игру открывает неизвестный перегон."],
   ["Хранитель памяти", "Сохраняет одну тайну роли и может передать её живому на общей станции."],
   ["Белый связной", "Каждый второй раунд проходит два тоннеля, но обязан закончить ход у живых."],
-  ["Смотритель огней", "Снимает одну рану или ступень давления Голоса у встреченного отряда."],
+  ["Смотритель огней", "Возвращает одну потерянную конечность встреченному живому, после чего теряет эту способность."],
 ];
 const darkForms = [
   ["Голодный шёпот", "Ходит один по любым тоннелям; за 1 рис переманивает NPC у одинокого живого."],
@@ -170,7 +177,7 @@ function loadState(): GameState {
   if (typeof window === "undefined") return initialState;
   try {
     const parsed = JSON.parse(localStorage.getItem("metro-game-console-v3") || "null");
-    return parsed ? { ...initialState, ...parsed, players: initialPlayers.map((player, index) => ({ ...player, ...(parsed.players?.[index] || {}) })), npcPositions: { ...initialNpcPositions, ...(parsed.npcPositions || {}) }, npcMoveRounds: { ...initialState.npcMoveRounds, ...(parsed.npcMoveRounds || {}) }, edges: { ...initialEdges, ...(parsed.edges || {}) } } : initialState;
+    return parsed ? { ...initialState, ...parsed, players: initialPlayers.map((player, index) => { const stored = parsed.players?.[index]; return { ...player, ...(stored || {}), lostLimbs: Array.isArray(stored?.lostLimbs) ? stored.lostLimbs : [] }; }), npcPositions: { ...initialNpcPositions, ...(parsed.npcPositions || {}) }, npcMoveRounds: { ...initialState.npcMoveRounds, ...(parsed.npcMoveRounds || {}) }, edges: { ...initialEdges, ...(parsed.edges || {}) } } : initialState;
   } catch { return initialState; }
 }
 
@@ -318,7 +325,7 @@ function MapPanel({ game, setGame, addLog, onCloseSafe }: { game: GameState; set
   };
   const importState = (file?: File) => {
     if (!file) return;
-    file.text().then((text) => { try { setGame({ ...initialState, ...JSON.parse(text) }); addLog("Сохранение загружено."); } catch { addLog("Файл сохранения не распознан."); } });
+    file.text().then((text) => { try { const parsed = JSON.parse(text); setGame({ ...initialState, ...parsed, players: initialPlayers.map((player, index) => { const stored = parsed.players?.[index]; return { ...player, ...(stored || {}), lostLimbs: Array.isArray(stored?.lostLimbs) ? stored.lostLimbs : [] }; }), npcPositions: { ...initialNpcPositions, ...(parsed.npcPositions || {}) }, npcMoveRounds: { ...initialState.npcMoveRounds, ...(parsed.npcMoveRounds || {}) }, edges: { ...initialEdges, ...(parsed.edges || {}) } }); addLog("Сохранение загружено."); } catch { addLog("Файл сохранения не распознан."); } });
   };
 
   return (
@@ -385,15 +392,22 @@ function PlayersPanel({ game, setGame, addLog }: { game: GameState; setGame: Rea
   const updatePlayer = (index: number, patch: Partial<PlayerState>) => {
     setGame((current) => ({ ...current, players: current.players.map((player, playerIndex) => playerIndex === index ? { ...player, ...patch } : player) }));
   };
-  const adjustHealth = (index: number, delta: number) => {
+  const adjustPersonalHealth = (index: number, delta: number) => {
     const player = game.players[index];
     const health = Math.max(0, Math.min(10, player.health + delta));
     updatePlayer(index, { health });
-    if (health === 0 && player.health > 0) addLog(`${player.name} потерял последнее сердце.`);
   };
-  const restoreAll = () => setGame((current) => ({ ...current, players: current.players.map((player) => ({ ...player, health: 10 })), log: ["Здоровье всех игроков восстановлено до 10.", ...current.log] }));
+  const toggleLimb = (index: number, limb: Limb) => {
+    const player = game.players[index];
+    const wasLost = player.lostLimbs.includes(limb);
+    const lostLimbs = wasLost ? player.lostLimbs.filter((item) => item !== limb) : [...player.lostLimbs, limb];
+    updatePlayer(index, { lostLimbs });
+    const label = limbOptions.find((item) => item.id === limb)?.label.toLowerCase();
+    addLog(wasLost ? `${player.name}: восстановлена ${label}.` : lostLimbs.length === 4 ? `${player.name} потерял все четыре конечности и погиб.` : `${player.name}: потеряна ${label}.`);
+  };
+  const restoreAll = () => setGame((current) => ({ ...current, players: current.players.map((player) => ({ ...player, health: 10, lostLimbs: [] })), log: ["Ранения игроков и личные шкалы ведущей сброшены.", ...current.log] }));
 
-  return <section className="tool-page players-page"><div className="tool-intro"><p className="eyebrow">Состояние отрядов</p><h2>Жизни игроков</h2><p>У каждого персонажа 10 сердец. Нажмите на сердце, чтобы сразу выставить нужное значение, или используйте кнопки − и + для точного изменения.</p></div><div className="players-toolbar"><span>Живы: <strong>{game.players.filter((player) => player.health > 0).length}</strong> / {game.players.length}</span><button onClick={restoreAll}>Восстановить всех</button></div><div className="players-grid">{game.players.map((player, index) => <article className={`player-card ${player.health === 0 ? "dead" : player.health <= 3 ? "critical" : ""}`} key={index}><div className="player-head"><span>{String(index + 1).padStart(2, "0")}</span><input value={player.name} aria-label={`Имя игрока ${index + 1}`} onChange={(event) => updatePlayer(index, { name: event.target.value })} /><strong>{player.health === 0 ? "Мёртв" : `${player.health}/10`}</strong></div><div className="hearts" aria-label={`${player.health} из 10 сердец`}>{Array.from({ length: 10 }, (_, heartIndex) => <button type="button" className={heartIndex < player.health ? "heart active" : "heart"} key={heartIndex} onClick={() => updatePlayer(index, { health: heartIndex + 1 })} aria-label={`Установить ${heartIndex + 1} сердец`}>♥</button>)}</div><div className="health-actions"><button onClick={() => adjustHealth(index, -1)} disabled={player.health === 0} aria-label={`Снять сердце у ${player.name}`}>−</button><span>{player.health === 0 ? "перейдите к разделу «После смерти»" : player.health <= 3 ? "критическое состояние" : "состояние стабильно"}</span><button onClick={() => adjustHealth(index, 1)} disabled={player.health === 10} aria-label={`Вернуть сердце ${player.name}`}>+</button></div></article>)}</div></section>;
+  return <section className="tool-page players-page"><div className="tool-intro"><p className="eyebrow">Состояние отрядов</p><h2>Ранения игроков</h2><p>Ранение может отнять руку или ногу. После потери всех четырёх конечностей персонаж погибает и переходит к разделу «После смерти».</p></div><div className="players-toolbar"><span>Живы: <strong>{game.players.filter((player) => player.lostLimbs.length < 4).length}</strong> / {game.players.length}</span><button onClick={restoreAll}>Сбросить ранения</button></div><div className="players-grid">{game.players.map((player, index) => { const lostCount = player.lostLimbs.length; const status = lostCount === 4 ? "Погиб" : lostCount === 3 ? "При смерти" : lostCount > 0 ? `Ранен · ${lostCount}/4` : "Цел"; return <article className={`player-card ${lostCount === 4 ? "dead" : lostCount === 3 ? "critical" : ""}`} key={index}><div className="player-head"><span>{String(index + 1).padStart(2, "0")}</span><input value={player.name} aria-label={`Имя игрока ${index + 1}`} onChange={(event) => updatePlayer(index, { name: event.target.value })} /><strong>{status}</strong></div><div className="limbs" aria-label={`Потеряно конечностей: ${lostCount} из 4`}>{limbOptions.map((limb) => { const lost = player.lostLimbs.includes(limb.id); return <button type="button" className={lost ? "limb lost" : "limb"} key={limb.id} onClick={() => toggleLimb(index, limb.id)} aria-pressed={lost}><span>{limb.short}</span><b>{lost ? "потеряна" : "цела"}</b></button>; })}</div><div className="personal-health"><p><span>♥ Личная шкала ведущей</span><small>не игровое правило</small></p><div className="hearts" aria-label={`${player.health} из 10 личных отметок`}>{Array.from({ length: 10 }, (_, heartIndex) => <button type="button" className={heartIndex < player.health ? "heart active" : "heart"} key={heartIndex} onClick={() => updatePlayer(index, { health: heartIndex + 1 })} aria-label={`Установить ${heartIndex + 1} личных отметок`}>♥</button>)}</div><div className="health-actions"><button onClick={() => adjustPersonalHealth(index, -1)} disabled={player.health === 0} aria-label={`Уменьшить личную шкалу ${player.name}`}>−</button><span>{player.health}/10</span><button onClick={() => adjustPersonalHealth(index, 1)} disabled={player.health === 10} aria-label={`Увеличить личную шкалу ${player.name}`}>+</button></div></div></article>; })}</div></section>;
 }
 
 function WheelPanel({ addLog, time }: { addLog: (s: string) => void; time: TimeOfDay }) {
