@@ -279,6 +279,19 @@ function MapPanel({ game, setGame, addLog, onCloseSafe }: { game: GameState; set
     const node = byId.get(id); if (!node) return;
     setTransform({ k: 2.7, x: WIDTH / 2 - node.x * 2.7, y: HEIGHT / 2 - node.y * 2.7 });
   };
+  const startMapDrag = (event: React.PointerEvent<SVGSVGElement>) => {
+    drag.current = { x: event.clientX, y: event.clientY, tx: transform.x, ty: transform.y };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+  const moveMapDrag = (event: React.PointerEvent<SVGSVGElement>) => {
+    const activeDrag = drag.current;
+    if (!activeDrag) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const nextX = activeDrag.tx + (event.clientX - activeDrag.x) * WIDTH / rect.width;
+    const nextY = activeDrag.ty + (event.clientY - activeDrag.y) * HEIGHT / rect.height;
+    setTransform((current) => ({ ...current, x: nextX, y: nextY }));
+  };
+  const stopMapDrag = () => { drag.current = null; };
   const handleSearch = () => {
     const q = search.toLowerCase().replaceAll("ё", "е").trim();
     const found = nodes.find((n) => n.name.toLowerCase().replaceAll("ё", "е").includes(q));
@@ -367,7 +380,7 @@ function MapPanel({ game, setGame, addLog, onCloseSafe }: { game: GameState; set
           <button type="button" onClick={() => zoomBy(1 / 1.3)} aria-label="Уменьшить карту" title="Уменьшить карту">−</button>
           <button type="button" className="map-zoom-fit" onClick={fit} aria-label="Показать карту целиком" title="Показать карту целиком">Всё</button>
         </div>
-        <svg className="metro-map" viewBox={`0 0 ${WIDTH} ${HEIGHT}`} onWheel={(event) => { event.preventDefault(); zoomBy(Math.exp(-event.deltaY * .0012)); }} onPointerDown={(e) => { drag.current = { x: e.clientX, y: e.clientY, tx: transform.x, ty: transform.y }; e.currentTarget.setPointerCapture(e.pointerId); }} onPointerMove={(e) => { if (!drag.current) return; const rect = e.currentTarget.getBoundingClientRect(); setTransform((t) => ({ ...t, x: drag.current!.tx + (e.clientX - drag.current!.x) * WIDTH / rect.width, y: drag.current!.ty + (e.clientY - drag.current!.y) * HEIGHT / rect.height })); }} onPointerUp={() => { drag.current = null; }}>
+        <svg className="metro-map" viewBox={`0 0 ${WIDTH} ${HEIGHT}`} onWheel={(event) => { event.preventDefault(); zoomBy(Math.exp(-event.deltaY * .0012)); }} onPointerDown={startMapDrag} onPointerMove={moveMapDrag} onPointerUp={stopMapDrag} onPointerCancel={stopMapDrag} onLostPointerCapture={stopMapDrag}>
           <defs><filter id="glow"><feGaussianBlur stdDeviation="2.2" result="blur" /><feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge></filter><marker id="track-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="4" markerHeight="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="#172019" /></marker></defs>
           <g transform={`translate(${transform.x} ${transform.y}) scale(${transform.k})`}>
             {edges.filter((edge) => edge.type === "transfer").map((edge) => { const a = byId.get(edge.source)!; const b = byId.get(edge.target)!; return <line key={edge.id} x1={a.x} y1={a.y} x2={b.x} y2={b.y} className="edge transfer" />; })}
