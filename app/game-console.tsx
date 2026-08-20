@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { metroData } from "./metro-data";
 import { scenarioEdgeMarks, scenarioNpcPositions, scenarioStartBriefs, scenarioStartNodeIds, stationResources } from "./scenario-data";
 import { stationLore } from "./station-lore";
+import { challengeCards, itemCards, type ChallengeCard } from "./card-data";
 
 type Tab = "map" | "players" | "wheel" | "death" | "log";
 type Mode = "inspect" | "npc" | "safe" | "unknown" | "closed";
@@ -15,6 +16,7 @@ type Limb = "leftArm" | "rightArm" | "leftLeg" | "rightLeg";
 type PlayerState = { name: string; health: number; lostLimbs: Limb[] };
 type GameState = {
   round: number;
+  activePair: number;
   time: TimeOfDay;
   players: PlayerState[];
   npcPositions: Record<string, string>;
@@ -151,23 +153,7 @@ const limbOptions: { id: Limb; label: string; short: string }[] = [
   { id: "rightLeg", label: "Правая нога", short: "П · нога" },
 ];
 const initialPlayers: PlayerState[] = Array.from({ length: 12 }, (_, index) => ({ name: `Игрок ${String(index + 1).padStart(2, "0")}`, health: 10, lostLimbs: [] }));
-const initialState: GameState = { round: 1, time: "Утро", players: initialPlayers, npcPositions: initialNpcPositions, npcMoveRounds: { gm: 0, role: -1 }, edges: initialEdges, notes: {}, swallowedStations: [], log: ["Партия создана. Утро. Голоса зовут к Полису."] };
-
-const challenges = [
-  { kind: "Угроза", text: "Стая идёт по следу. Потратьте 2 патрона или получите рану." },
-  { kind: "Выбор", text: "Обход безопасен, но займёт ещё один ход. Короткий путь требует потратить защитный предмет." },
-  { kind: "Голос", text: "Голос называет имя одного NPC. Проводник знает больше, чем говорит." },
-  { kind: "Ресурс", text: "Затопленный склад: возьмите 3 патрона, но один предмет намокает." },
-  { kind: "Контакт", text: "Патруль требует пошлину: 1 патрон за каждые четыре фигурки в отряде." },
-  { kind: "Тишина", text: "Ничего не происходит. Именно это пугает сильнее всего." },
-  { kind: "Разлом", text: "Проход выдержит только половину отряда. Решите, кто идёт первым." },
-  { kind: "След", text: "На стене свежая отметка. Откройте статус соседнего тоннеля." },
-  { kind: "Аномалия", text: "Время расходится: следующий ход каравана случится немедленно." },
-  { kind: "Испытание", text: "Погасите свет на 45 секунд. Разговаривать можно только шёпотом." },
-  { kind: "Находка", text: "Фонарь ещё работает. Получите предмет, но отметьте своё присутствие." },
-  { kind: "Долг", text: "Незнакомец помогает пройти, если вы пообещаете услугу в Полисе." },
-  { kind: "Чёрное нечто", text: "С края выбранной ветки исчезает крайняя станция. Закройте обе трубы соседнего перегона и уберите всех оставшихся там NPC." },
-];
+const initialState: GameState = { round: 1, activePair: 0, time: "Утро", players: initialPlayers, npcPositions: initialNpcPositions, npcMoveRounds: { gm: 0, role: -1 }, edges: initialEdges, notes: {}, swallowedStations: [], log: ["Партия создана. Утро. Первым действует отряд 1."] };
 
 const lightForms = [
   ["Эхо-проводник", "Ходит один по любым тоннелям; раз за игру открывает неизвестный перегон."],
@@ -202,8 +188,15 @@ export function GameConsole() {
     setGame((g) => ({ ...g, log: [`${stamp} · ${message}`, ...g.log].slice(0, 80) }));
   }, []);
 
-  const nextRound = () => {
-    setGame((g) => ({ ...g, round: g.round + 1, log: [`Раунд ${g.round + 1} начался. Караваны делают ${g.round % 2 ? "ход" : "остановку"}.`, ...g.log] }));
+  const nextTurn = () => {
+    setGame((g) => {
+      if (g.activePair < 5) {
+        const activePair = g.activePair + 1;
+        return { ...g, activePair, log: [`Ход передан отряду ${activePair + 1}.`, ...g.log] };
+      }
+      const round = g.round + 1;
+      return { ...g, round, activePair: 0, log: [`Мировая фаза завершена. Раунд ${round}: первым действует отряд 1. Караваны делают ${g.round % 2 ? "ход" : "остановку"}.`, ...g.log] };
+    });
   };
 
   const advanceTime = () => {
@@ -227,15 +220,15 @@ export function GameConsole() {
         </div>
         <div className="round-control">
           <button className={`time-button ${game.time === "Ночь" ? "night" : ""}`} onClick={advanceTime}><span>Общее время</span><b>{game.time}</b></button>
-          <span>Раунд</span><strong>{String(game.round).padStart(2, "0")}</strong>
-          <button className="primary" onClick={nextRound}>Следующий раунд <span>→</span></button>
+          <div className="turn-readout"><span>Раунд {String(game.round).padStart(2, "0")} · ход отряда</span><strong>{String(game.activePair + 1).padStart(2, "0")}<small>/06</small></strong><em>{game.players[game.activePair * 2]?.name} · {game.players[game.activePair * 2 + 1]?.name}</em></div>
+          <button className="primary" onClick={nextTurn}>Следующий отряд <span>→</span></button>
         </div>
       </header>
 
       <nav className="tabs" aria-label="Разделы пульта">
         <TabButton active={tab === "map"} onClick={() => setTab("map")} icon="⌘">Карта</TabButton>
         <TabButton active={tab === "players"} onClick={() => setTab("players")} icon="♥">Игроки</TabButton>
-        <TabButton active={tab === "wheel"} onClick={() => setTab("wheel")} icon="◉">Колесо испытаний</TabButton>
+        <TabButton active={tab === "wheel"} onClick={() => setTab("wheel")} icon="▤">Карточки</TabButton>
         <TabButton active={tab === "death"} onClick={() => setTab("death")} icon="◇">После смерти</TabButton>
         <TabButton active={tab === "log"} onClick={() => setTab("log")} icon="≡">Журнал <b>{game.log.length}</b></TabButton>
         <div className="status"><span className="pulse" /> партия сохранена на устройстве</div>
@@ -243,7 +236,7 @@ export function GameConsole() {
 
       {tab === "map" && <MapPanel game={game} setGame={setGame} addLog={addLog} onCloseSafe={closeRandomSafe} />}
       {tab === "players" && <PlayersPanel game={game} setGame={setGame} addLog={addLog} />}
-      {tab === "wheel" && <WheelPanel addLog={addLog} time={game.time} />}
+      {tab === "wheel" && <ChallengeDeckPanel addLog={addLog} time={game.time} />}
       {tab === "death" && <DeathPanel addLog={addLog} />}
       {tab === "log" && <LogPanel game={game} setGame={setGame} />}
     </main>
@@ -493,10 +486,24 @@ function PlayersPanel({ game, setGame, addLog }: { game: GameState; setGame: Rea
   return <section className="tool-page players-page"><div className="tool-intro"><p className="eyebrow">Состояние отрядов</p><h2>Ранения игроков</h2><p>Ранение может отнять руку или ногу. После потери всех четырёх конечностей персонаж погибает и переходит к разделу «После смерти».</p></div><div className="players-toolbar"><span>Живы: <strong>{game.players.filter((player) => player.lostLimbs.length < 4).length}</strong> / {game.players.length}</span><button onClick={restoreAll}>Сбросить ранения</button></div><div className="players-grid">{game.players.map((player, index) => { const lostCount = player.lostLimbs.length; const status = lostCount === 4 ? "Погиб" : lostCount === 3 ? "При смерти" : lostCount > 0 ? `Ранен · ${lostCount}/4` : "Цел"; return <article className={`player-card ${lostCount === 4 ? "dead" : lostCount === 3 ? "critical" : ""}`} key={index}><div className="player-head"><span>{String(index + 1).padStart(2, "0")}</span><input value={player.name} aria-label={`Имя игрока ${index + 1}`} onChange={(event) => updatePlayer(index, { name: event.target.value })} /><strong>{status}</strong></div><div className="limbs" aria-label={`Потеряно конечностей: ${lostCount} из 4`}>{limbOptions.map((limb) => { const lost = player.lostLimbs.includes(limb.id); return <button type="button" className={lost ? "limb lost" : "limb"} key={limb.id} onClick={() => toggleLimb(index, limb.id)} aria-pressed={lost}><span>{limb.short}</span><b>{lost ? "потеряна" : "цела"}</b></button>; })}</div><div className="personal-health"><p><span>♥ Личная шкала ведущей</span><small>не игровое правило</small></p><div className="hearts" aria-label={`${player.health} из 10 личных отметок`}>{Array.from({ length: 10 }, (_, heartIndex) => <button type="button" className={heartIndex < player.health ? "heart active" : "heart"} key={heartIndex} onClick={() => updatePlayer(index, { health: heartIndex + 1 })} aria-label={`Установить ${heartIndex + 1} личных отметок`}>♥</button>)}</div><div className="health-actions"><button onClick={() => adjustPersonalHealth(index, -1)} disabled={player.health === 0} aria-label={`Уменьшить личную шкалу ${player.name}`}>−</button><span>{player.health}/10</span><button onClick={() => adjustPersonalHealth(index, 1)} disabled={player.health === 10} aria-label={`Увеличить личную шкалу ${player.name}`}>+</button></div></div></article>; })}</div></section>;
 }
 
-function WheelPanel({ addLog, time }: { addLog: (s: string) => void; time: TimeOfDay }) {
-  const [rotation, setRotation] = useState(0); const [spinning, setSpinning] = useState(false); const [result, setResult] = useState<(typeof challenges)[number] | null>(null);
-  const spin = () => { if (spinning) return; const index = Math.floor(Math.random() * challenges.length); const next = rotation + 1440 + (360 - index * 30) + 15; setSpinning(true); setRotation(next); setTimeout(() => { setResult(challenges[index]); setSpinning(false); addLog(`Колесо: ${challenges[index].kind} — ${challenges[index].text}`); }, 1650); };
-  return <section className="tool-page"><div className="tool-intro"><p className="eyebrow">Тоннельный модуль · общее время: {time}</p><h2>Колесо испытаний</h2><p>Крутите один раз при входе в опасный или неизвестный перегон. Результат задаёт сцену, но последнее решение остаётся за ведущим.</p>{time === "Ночь" && <div className="night-warning">Ночь: тяжёлые последствия встречаются чаще. Станции становятся безопасной тактической паузой.</div>}</div><div className="wheel-grid"><div className="wheel-wrap"><div className="pointer">▼</div><div className="wheel" style={{ transform: `rotate(${rotation}deg)` }}>{challenges.map((item, i) => <span key={i} style={{ transform: `rotate(${i * 30 + 15}deg) translateY(-138px)` }}>{i + 1}</span>)}</div><button className="wheel-button" onClick={spin} disabled={spinning}>{spinning ? "…" : "КРУТИТЬ"}</button></div><div className="result-panel"><p className="side-label">Результат</p>{result ? <><span className="result-kind">{result.kind}</span><h3>{result.text}</h3><div className="result-actions"><button onClick={() => setResult(null)}>Сбросить</button><button className="primary" onClick={spin}>Ещё раз</button></div></> : <div className="result-empty"><strong>Колесо ждёт</strong><p>На нём 12 коротких событий: угроза, ресурс, контакт, аномалия и моральный выбор.</p></div>}<div className="rule-note"><span>Цена решения</span><p>Игроки выбирают предмет, способность, отступление или трату патронов; отдельной числовой ставки риска нет.</p></div></div></div></section>;
+function ChallengeDeckPanel({ addLog, time }: { addLog: (s: string) => void; time: TimeOfDay }) {
+  const [view, setView] = useState<"challenge" | "items">("challenge");
+  const [card, setCard] = useState<ChallengeCard | null>(null);
+  const [itemId, setItemId] = useState("");
+  const [proposal, setProposal] = useState("");
+  const [ruling, setRuling] = useState<"Одобрено" | "Одобрено с ценой" | "Последствие / отказ" | null>(null);
+  const draw = () => {
+    const next = challengeCards[Math.floor(Math.random() * challengeCards.length)];
+    setCard(next); setItemId(""); setProposal(""); setRuling(null);
+    addLog(`Открыто испытание «${next.title}» (${next.category}).`);
+  };
+  const decide = (decision: "Одобрено" | "Одобрено с ценой" | "Последствие / отказ") => {
+    if (!card) return;
+    setRuling(decision);
+    const item = itemCards.find((entry) => entry.id === itemId)?.title;
+    addLog(`Испытание «${card.title}»: ${decision.toLowerCase()}${item ? ` · предъявлен предмет «${item}»` : ""}${proposal.trim() ? ` · решение: ${proposal.trim()}` : ""}.`);
+  };
+  return <section className="tool-page card-deck-page"><div className="tool-intro"><p className="eyebrow">Ролевые испытания · общее время: {time}</p><h2>Карточки тоннелей</h2><p>Карточка задаёт ситуацию и открытый вопрос. Игроки предлагают предмет, способность или отыгранное решение; ведущая вручную принимает его, назначает цену либо последствие.</p>{time === "Ночь" && <div className="night-warning">Ночь: ведущая может усиливать последствия. Это ориентир для сцены, а не автоматическая проверка.</div>}</div><div className="deck-switch"><button className={view === "challenge" ? "active" : ""} onClick={() => setView("challenge")}>Испытания · {challengeCards.length}</button><button className={view === "items" ? "active" : ""} onClick={() => setView("items")}>Предметы · {itemCards.length}</button></div>{view === "challenge" ? <div className="challenge-layout"><section className="challenge-card">{card ? <><div className="challenge-card-head"><span>{card.category}</span><small>{card.id}</small></div><h3>{card.title}</h3><p className="challenge-scene">{card.scene}</p><div className="challenge-question"><span>Открытый вопрос</span><strong>{card.question}</strong></div><div className="counter-list"><span>Ориентиры, не ограничение</span>{card.counters.map((counter) => <b key={counter}>{counter}</b>)}</div><div className="challenge-stakes"><p><span>Если решения нет</span>{card.consequence}</p>{card.reward && <p className="reward"><span>Возможная награда</span>{card.reward}</p>}</div></> : <div className="result-empty"><strong>Колода готова</strong><p>Откройте случайную ситуацию, когда отряд входит в опасный или неизвестный тоннель. Никакого правильного ответа внутри сайта нет.</p></div>}<button className="primary full" onClick={draw}>{card ? "Следующая карточка" : "Открыть карточку"}</button></section><section className="ruling-panel"><p className="side-label">Решение отряда</p><label>Предъявленный предмет<select value={itemId} onChange={(event) => setItemId(event.target.value)}><option value="">Без карточки предмета</option>{itemCards.map((item) => <option key={item.id} value={item.id}>{item.title} · {item.cost} патр.</option>)}</select></label><label>Предложение или отыгрыш<textarea value={proposal} onChange={(event) => setProposal(event.target.value)} placeholder="Например: натягиваем тент, отводим воду проволокой и сначала переводим раненого…" /></label><div className="ruling-buttons"><button disabled={!card} onClick={() => decide("Одобрено")}>Одобрить</button><button disabled={!card} onClick={() => decide("Одобрено с ценой")}>С ценой</button><button disabled={!card} onClick={() => decide("Последствие / отказ")}>Последствие</button></div>{ruling && <div className="ruling-result"><span>Решение ведущей</span><strong>{ruling}</strong><p>Записано в журнал. Предложенные контрмеры на карточке не являются белым списком.</p></div>}<div className="rule-note"><span>Ручное решение</span><p>Хороший отыгрыш может сработать без предмета. Предмет тоже не гарантирует успех, если способ применения не объяснён.</p></div></section></div> : <div className="item-library">{itemCards.map((item) => <article key={item.id}><div><span>{item.category}</span><b>{item.cost} патр.</b></div><h3>{item.title}</h3><p>{item.description}</p><div className="item-tags">{item.tags.map((tag) => <i key={tag}>{tag}</i>)}</div><ul>{item.examples.map((example) => <li key={example}>{example}</li>)}</ul></article>)}</div>}</section>;
 }
 
 function DeathPanel({ addLog }: { addLog: (s: string) => void }) {
