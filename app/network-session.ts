@@ -1,3 +1,5 @@
+import { scenarioEdgeMarks, scenarioNpcPositions } from "./scenario-data";
+
 export type SessionTime = "Утро" | "День" | "Вечер" | "Ночь";
 export type SessionPhase = "planning" | "reveal" | "challenge" | "resolution";
 export type PlayerIntent = "stay" | "tunnel" | null;
@@ -9,6 +11,7 @@ export type NetworkPlayer = {
   roleId: string;
   position: string;
   bullets: number;
+  health: number;
   lostLimbs: string[];
   inventory: string[];
   intent: PlayerIntent;
@@ -16,6 +19,34 @@ export type NetworkPlayer = {
   ready: boolean;
   onlineAt: number | null;
   selectedItem: string | null;
+};
+
+export type NetworkWorld = {
+  edges: Record<string, "normal" | "safe" | "unknown" | "closed">;
+  npcPositions: Record<string, string>;
+  npcOwners: Record<string, number | null>;
+  npcServiceUsed: Record<string, boolean>;
+  npcMoveRounds: { gm: number; role: number };
+  notes: Record<string, string>;
+  swallowedStations: string[];
+  blackThread: { active: boolean; everyRounds: number; lastRound: number };
+  gmLog: string[];
+};
+
+export type GmConsoleSnapshot = {
+  round: number;
+  activePair: number;
+  time: SessionTime;
+  activePlayerCount: 4 | 12;
+  players: Array<{
+    name: string;
+    health: number;
+    lostLimbs: string[];
+    roleId: string;
+    bullets: number;
+    position: string;
+  }>;
+  world: NetworkWorld;
 };
 
 export type SessionLog = { id: string; at: number; text: string };
@@ -34,6 +65,7 @@ export type NetworkSession = {
   activeChallenge: string | null;
   crisisStatus: "inactive" | "active" | "resolved";
   gmMessage: string;
+  world: NetworkWorld;
   log: SessionLog[];
   updatedAt: number;
 };
@@ -94,6 +126,44 @@ const inventories = [
   ["radio", "wire"], ["cloth", "battery"], ["crowbar", "flare"], ["pass", "painkillers"],
 ];
 
+function createInitialWorld(): NetworkWorld {
+  return {
+    edges: { ...scenarioEdgeMarks },
+    npcPositions: { ...scenarioNpcPositions, "npc-26": "2::новокузнецкая", "npc-27": "6::китай-город" },
+    npcOwners: {},
+    npcServiceUsed: {},
+    npcMoveRounds: { gm: 0, role: -1 },
+    notes: {},
+    swallowedStations: [],
+    blackThread: { active: false, everyRounds: 2, lastRound: 0 },
+    gmLog: ["Сетевая партия создана. Полный пульт ведущей подключён к комнате."],
+  };
+}
+
+export function normalizeSession(stored: NetworkSession): NetworkSession {
+  const defaults = createInitialWorld();
+  const world = stored.world || defaults;
+  return {
+    ...stored,
+    resolvedPairs: stored.resolvedPairs || [],
+    crisisStatus: stored.crisisStatus || "inactive",
+    players: stored.players.map((player) => ({ ...player, health: Number.isFinite(player.health) ? player.health : 10 })),
+    world: {
+      ...defaults,
+      ...world,
+      edges: { ...defaults.edges, ...(world.edges || {}) },
+      npcPositions: { ...defaults.npcPositions, ...(world.npcPositions || {}) },
+      npcOwners: world.npcOwners || {},
+      npcServiceUsed: world.npcServiceUsed || {},
+      npcMoveRounds: { ...defaults.npcMoveRounds, ...(world.npcMoveRounds || {}) },
+      notes: world.notes || {},
+      swallowedStations: Array.isArray(world.swallowedStations) ? world.swallowedStations : [],
+      blackThread: { ...defaults.blackThread, ...(world.blackThread || {}) },
+      gmLog: Array.isArray(world.gmLog) ? world.gmLog : defaults.gmLog,
+    },
+  };
+}
+
 function logEntry(text: string): SessionLog {
   const at = Date.now();
   return { id: `${at}-${Math.random().toString(36).slice(2, 8)}`, at, text };
@@ -107,11 +177,12 @@ export function createDemoSession(code = "TEST26"): NetworkSession {
     players: roleIds.map((roleId, index) => ({
       id: index + 1, name: `Игрок ${String(index + 1).padStart(2, "0")}`,
       pair: Math.floor(index / 2) + 1, roleId, position: starts[index], bullets: bullets[index],
-      lostLimbs: [], inventory: inventories[index], intent: null, target: null,
+      health: 10, lostLimbs: [], inventory: inventories[index], intent: null, target: null,
       ready: false, onlineAt: null, selectedItem: null,
     })),
     activeChallenge: null, crisisStatus: "inactive",
     gmMessage: "Голоса становятся тише, когда вы движетесь к Полису.",
+    world: createInitialWorld(),
     log: [logEntry("Тестовая комната создана. Активны две пары и четыре личных экрана.")],
     updatedAt: now,
   };
@@ -132,6 +203,7 @@ export type SessionAction =
   | { type: "gm-set-player-count"; count: 4 | 12 }
   | { type: "gm-adjust-bullets"; playerId: number; delta: number }
   | { type: "gm-limb"; playerId: number; limb: string }
+  | { type: "gm-sync-console"; snapshot: GmConsoleSnapshot }
   | { type: "gm-reset" };
 
 const timeCycle: SessionTime[] = ["Утро", "День", "Вечер", "Ночь"];
@@ -237,6 +309,39 @@ export function applySessionAction(state: NetworkSession, action: SessionAction,
       addLog(`${player.name}: состояние конечностей изменено.`);
       break;
     }
+    case "gm-sync-console": {
+      const snapshot = action.snapshot;
+      next.round = Math.max(1, snapshot.round);
+      next.activePair = Math.max(1, Math.min(snapshot.activePlayerCount / 2, snapshot.activePair + 1));
+      next.time = snapshot.time;
+      next.playerCount = snapshot.activePlayerCount;
+      next.players = next.players.map((player, index) => {
+        const incoming = snapshot.players[index];
+        return incoming ? {
+          ...player,
+          name: incoming.name.slice(0, 28),
+          health: Math.max(0, Math.min(10, incoming.health)),
+          lostLimbs: [...incoming.lostLimbs],
+          roleId: incoming.roleId,
+          bullets: Math.max(0, incoming.bullets),
+          position: incoming.position,
+        } : player;
+      });
+      next.world = {
+        ...next.world,
+        ...snapshot.world,
+        edges: { ...snapshot.world.edges },
+        npcPositions: { ...snapshot.world.npcPositions },
+        npcOwners: { ...snapshot.world.npcOwners },
+        npcServiceUsed: { ...snapshot.world.npcServiceUsed },
+        npcMoveRounds: { ...snapshot.world.npcMoveRounds },
+        notes: { ...snapshot.world.notes },
+        swallowedStations: [...snapshot.world.swallowedStations],
+        blackThread: { ...snapshot.world.blackThread },
+        gmLog: [...snapshot.world.gmLog].slice(0, 120),
+      };
+      break;
+    }
     case "gm-reset": return createDemoSession(state.code);
   }
   return next;
@@ -249,6 +354,11 @@ export function projectSession(state: NetworkSession, viewer: Viewer) {
   return {
     ...state,
     activeChallenge: canSeeChallenge ? state.activeChallenge : null,
+    world: {
+      ...state.world,
+      notes: {},
+      gmLog: [],
+    },
     players: active.map((player) => {
       const own = viewer.kind === "player" && viewer.playerId === player.id;
       const pair = viewer.kind === "squad" && viewer.pair === player.pair;

@@ -1,8 +1,8 @@
 import { env } from "cloudflare:workers";
-import { applySessionAction, createDemoSession, projectSession, resolveViewer, type NetworkSession, type SessionAction } from "../../../network-session";
+import { applySessionAction, createDemoSession, normalizeSession, projectSession, resolveViewer, type NetworkSession, type SessionAction } from "../../../network-session";
 import { metroData } from "../../../metro-data";
 import { getCordonProfile } from "../../../game-data";
-import { scenarioEdgeMarks, stationResources } from "../../../scenario-data";
+import { stationResources } from "../../../scenario-data";
 
 type RouteContext = { params: Promise<{ code: string }> };
 
@@ -22,13 +22,13 @@ async function readOrCreate(code: string): Promise<NetworkSession> {
   const row = await env.DB.prepare("SELECT state_json FROM game_rooms WHERE code = ?").bind(code).first<{ state_json: string }>();
   if (row?.state_json) {
     const stored=JSON.parse(row.state_json) as NetworkSession;
-    return {...stored,resolvedPairs:stored.resolvedPairs||[],crisisStatus:stored.crisisStatus||"inactive"};
+    return normalizeSession(stored);
   }
   const state = createDemoSession(code);
   await env.DB.prepare("INSERT OR IGNORE INTO game_rooms (code, state_json, revision) VALUES (?, ?, ?)")
     .bind(code, JSON.stringify(state), state.revision).run();
   const inserted = await env.DB.prepare("SELECT state_json FROM game_rooms WHERE code = ?").bind(code).first<{ state_json: string }>();
-  return inserted?.state_json ? JSON.parse(inserted.state_json) as NetworkSession : state;
+  return inserted?.state_json ? normalizeSession(JSON.parse(inserted.state_json) as NetworkSession) : state;
 }
 
 function cleanCode(value: string) {
@@ -52,7 +52,7 @@ function resolveMovement(state: NetworkSession) {
     if (!edge) { notes.push(`${travelers.map(p=>p.name).join(" и ")}: переход не найден.`); return; }
     if (edge.type !== "transfer") {
       const direction = edge.source === source ? "forward" : "backward";
-      if ((scenarioEdgeMarks as Record<string, string>)[`${edge.id}::${direction}`] === "closed") { notes.push(`${travelers.map(p=>p.name).join(" и ")}: тоннель закрыт, группа осталась на месте.`); return; }
+      if (state.world.edges[`${edge.id}::${direction}`] === "closed") { notes.push(`${travelers.map(p=>p.name).join(" и ")}: тоннель закрыт, группа осталась на месте.`); return; }
     }
     let toll = edge.type === "transfer" ? getCordonProfile(edge.id).price + (state.time === "Вечер" ? 1 : 0) : 0;
     if (toll) {

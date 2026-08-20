@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { GameConsole } from "./game-console";
+import { RoomConsole } from "./network-console";
 
 export const metadata: Metadata = {
   title: "Голоса под Москвой — пульт ведущего",
@@ -7,5 +7,5 @@ export const metadata: Metadata = {
 };
 
 export default function Home() {
-  return <GameConsole />;
+  return <RoomConsole defaultCode="TEST26" defaultPin="2600" />;
 }

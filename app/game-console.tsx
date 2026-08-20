@@ -7,6 +7,7 @@ import { stationLore } from "./station-lore";
 import { stationStories } from "./station-stories";
 import { challengeCards, itemCards, type ChallengeCard } from "./card-data";
 import { cordonChoices, cordonRules, crisisCards, getCordonProfile, npcCards, prophecyCadence, prophecyConditions, roleCards, startCordonBalance, timeRules } from "./game-data";
+import type { GmConsoleSnapshot, NetworkSession, SessionAction } from "./network-session";
 
 type Tab = "map" | "players" | "npc" | "wheel" | "crisis" | "death" | "log";
 type Mode = "inspect" | "npc" | "safe" | "unknown" | "closed";
@@ -31,6 +32,12 @@ type GameState = {
   swallowedStations: string[];
   blackThread: { active: boolean; everyRounds: number; lastRound: number };
   log: string[];
+};
+type NetworkBridge = {
+  code: string;
+  state: NetworkSession;
+  busy: boolean;
+  act: (action: SessionAction) => void;
 };
 
 const rawNodes = metroData.nodes as readonly { id: string; name: string; lineId: string; lineName: string; color: string; lat: number; lng: number }[];
@@ -154,6 +161,56 @@ const limbOptions: { id: Limb; label: string; short: string }[] = [
 const initialPlayers: PlayerState[] = Array.from({ length: 12 }, (_, index) => { const role = roleCards[index]; const position=scenarioStartNodeIds[Math.floor(index / 2) % scenarioStartNodeIds.length]; return { name: `Игрок ${String(index + 1).padStart(2, "0")}`, health: 10, lostLimbs: [], roleId: role.id, bullets: role.bullets+(startCordonBalance[position]?.bonusBullets||0), position }; });
 const initialState: GameState = { round: 1, activePair: 0, time: "Утро", players: initialPlayers, activePlayerCount: 4, npcPositions: initialNpcPositions, npcOwners: {}, npcServiceUsed: {}, npcMoveRounds: { gm: 0, role: -1 }, edges: initialEdges, notes: {}, swallowedStations: [], blackThread: { active: false, everyRounds: 2, lastRound: 0 }, log: ["Тестовая партия создана: 2 пары, 4 личных экрана. Утро."] };
 
+function gameFromNetwork(state: NetworkSession): GameState {
+  return {
+    round: state.round,
+    activePair: Math.max(0, state.activePair - 1),
+    time: state.time,
+    activePlayerCount: state.playerCount,
+    players: initialPlayers.map((fallback, index) => {
+      const player = state.players[index];
+      return player ? {
+        name: player.name,
+        health: player.health ?? 10,
+        lostLimbs: player.lostLimbs as Limb[],
+        roleId: player.roleId,
+        bullets: player.bullets,
+        position: player.position,
+      } : fallback;
+    }),
+    npcPositions: { ...state.world.npcPositions },
+    npcOwners: { ...state.world.npcOwners },
+    npcServiceUsed: { ...state.world.npcServiceUsed },
+    npcMoveRounds: { ...state.world.npcMoveRounds },
+    edges: { ...initialEdges, ...state.world.edges },
+    notes: { ...state.world.notes },
+    swallowedStations: [...state.world.swallowedStations],
+    blackThread: { ...state.world.blackThread },
+    log: [...state.world.gmLog],
+  };
+}
+
+function snapshotFromGame(game: GameState): GmConsoleSnapshot {
+  return {
+    round: game.round,
+    activePair: game.activePair,
+    time: game.time,
+    activePlayerCount: game.activePlayerCount,
+    players: game.players.map((player) => ({ ...player, lostLimbs: [...player.lostLimbs] })),
+    world: {
+      edges: { ...game.edges },
+      npcPositions: { ...game.npcPositions },
+      npcOwners: { ...game.npcOwners },
+      npcServiceUsed: { ...game.npcServiceUsed },
+      npcMoveRounds: { ...game.npcMoveRounds },
+      notes: { ...game.notes },
+      swallowedStations: [...game.swallowedStations],
+      blackThread: { ...game.blackThread },
+      gmLog: [...game.log],
+    },
+  };
+}
+
 function swallowOneEdgeState(current: GameState): GameState {
   const swallowed = new Set(current.swallowedStations);
   const candidates = nodes.filter((node) => !swallowed.has(node.id) && !/библиотека им/i.test(node.name)).map((node) => {
@@ -197,14 +254,37 @@ function loadState(): GameState {
   } catch { return initialState; }
 }
 
-export function GameConsole() {
+export function GameConsole({ network, networkControls }: { network?: NetworkBridge; networkControls?: React.ReactNode } = {}) {
   const [tab, setTab] = useState<Tab>("map");
   const [game, setGame] = useState<GameState>(initialState);
   const [hydrated, setHydrated] = useState(false);
-  // The persisted GM console is intentionally hydrated after the browser mounts.
-  // eslint-disable-next-line react-hooks/set-state-in-effect
-  useEffect(() => { setGame(loadState()); setHydrated(true); }, []);
-  useEffect(() => { if (hydrated) localStorage.setItem("metro-game-console-v5", JSON.stringify(game)); }, [game, hydrated]);
+  const lastRemoteSignature = useRef("");
+  useEffect(() => {
+    if (!network) {
+      setGame(loadState());
+      setHydrated(true);
+      return;
+    }
+    const next = gameFromNetwork(network.state);
+    const signature = JSON.stringify(snapshotFromGame(next));
+    lastRemoteSignature.current = signature;
+    if (JSON.stringify(snapshotFromGame(game)) !== signature) setGame(next);
+    setHydrated(true);
+    // The room revision is the authoritative signal that another device changed the shared state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [network?.state.revision]);
+  useEffect(() => {
+    if (!hydrated) return;
+    if (!network) {
+      localStorage.setItem("metro-game-console-v5", JSON.stringify(game));
+      return;
+    }
+    const snapshot = snapshotFromGame(game);
+    const signature = JSON.stringify(snapshot);
+    if (signature === lastRemoteSignature.current) return;
+    const timer = window.setTimeout(() => network.act({ type: "gm-sync-console", snapshot }), 180);
+    return () => window.clearTimeout(timer);
+  }, [game, hydrated, network]);
 
   const addLog = useCallback((message: string) => {
     const stamp = new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
@@ -259,8 +339,10 @@ export function GameConsole() {
         <TabButton active={tab === "crisis"} onClick={() => setTab("crisis")} icon="⚠">Кризисы</TabButton>
         <TabButton active={tab === "death"} onClick={() => setTab("death")} icon="◇">После смерти</TabButton>
         <TabButton active={tab === "log"} onClick={() => setTab("log")} icon="≡">Журнал <b>{game.log.length}</b></TabButton>
-        <div className="status"><a className="network-launch" href="/play">Сетевая игра</a><span className="pulse" /> локальный пульт</div>
+        <div className="status"><a className="network-launch" href="/play">Подключения</a><span className="pulse" /> {network ? `единая комната ${network.code}` : "локальный резерв"}</div>
       </nav>
+
+      {network && networkControls && <details className="unified-session-panel" open><summary><span>Сетевая партия</span><b>Полный контроль комнаты · {network.busy ? "сохраняется…" : "синхронизировано"}</b></summary>{networkControls}</details>}
 
       <div className={`time-rule-strip ${game.time === "Ночь" ? "night" : ""}`}><b>{game.time}</b><span>{timeRules[game.time].boon}</span><i>{timeRules[game.time].pressure}</i></div>
 

@@ -2,9 +2,10 @@
 
 /* eslint-disable react-hooks/set-state-in-effect, react-hooks/purity, @next/next/no-html-link-for-pages */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { challengeCards, itemCards } from "./card-data";
 import { getCordonProfile, roleCards } from "./game-data";
+import { GameConsole } from "./game-console";
 import { metroData } from "./metro-data";
 import { demoCredentials, type NetworkSession, type SessionAction, type Viewer } from "./network-session";
 import { scenarioEdgeMarks as rawScenarioEdgeMarks, stationResources } from "./scenario-data";
@@ -31,27 +32,34 @@ function useRoom(code:string,pin:string){
   const [payload,setPayload]=useState<RoomPayload|null>(null);
   const [error,setError]=useState("");
   const [busy,setBusy]=useState(false);
+  const payloadRef=useRef<RoomPayload|null>(null);
+  const queueRef=useRef<Promise<void>>(Promise.resolve());
+  const updatePayload=useCallback((next:RoomPayload)=>{payloadRef.current=next;setPayload(next);},[]);
   const load=useCallback(async(silent=false)=>{
     try{
       const response=await fetch(`/api/room/${encodeURIComponent(code)}?pin=${encodeURIComponent(pin)}`,{cache:"no-store"});
       const data=await response.json() as RoomPayload&{error?:string};
       if(!response.ok) throw new Error(data.error||"Комната недоступна.");
-      setPayload(data); if(!silent)setError("");
+      updatePayload(data); if(!silent)setError("");
     }catch(reason){if(!silent)setError(reason instanceof Error?reason.message:"Ошибка связи.");}
-  },[code,pin]);
+  },[code,pin,updatePayload]);
   useEffect(()=>{void load();const timer=window.setInterval(()=>void load(true),1500);return()=>window.clearInterval(timer);},[load]);
-  const act=useCallback(async(action:SessionAction)=>{
-    if(!payload||busy)return;
+  const act=useCallback((action:SessionAction)=>{
     setBusy(true);setError("");
-    try{
-      const response=await fetch(`/api/room/${encodeURIComponent(code)}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({pin,action,expectedRevision:payload.state.revision})});
-      const data=await response.json() as RoomPayload&{error?:string};
-      if(response.status===409){if(data.state)setPayload((old)=>old?{...old,state:data.state}:old);throw new Error(data.error||"Кто-то сделал действие одновременно. Повторите выбор.");}
-      if(!response.ok)throw new Error(data.error||"Действие не выполнено.");
-      setPayload(data);
-    }catch(reason){setError(reason instanceof Error?reason.message:"Ошибка связи.");}
-    finally{setBusy(false);}
-  },[busy,code,payload,pin]);
+    queueRef.current=queueRef.current.then(async()=>{
+      let base=payloadRef.current;
+      if(!base){await load(true);base=payloadRef.current;}
+      if(!base)throw new Error("Комната ещё не загружена.");
+      for(let attempt=0;attempt<2;attempt+=1){
+        const response=await fetch(`/api/room/${encodeURIComponent(code)}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({pin,action,expectedRevision:base.state.revision})});
+        const data=await response.json() as RoomPayload&{error?:string};
+        if(response.status===409&&data.state){base={...base,state:data.state};updatePayload(base);continue;}
+        if(!response.ok)throw new Error(data.error||"Действие не выполнено.");
+        updatePayload(data);return;
+      }
+      throw new Error("Состояние изменилось одновременно. Действие будет безопасно повторить.");
+    }).catch(reason=>setError(reason instanceof Error?reason.message:"Ошибка связи.")).finally(()=>setBusy(false));
+  },[code,load,pin,updatePayload]);
   return{payload,error,busy,act,reload:load};
 }
 
@@ -79,14 +87,14 @@ export function JoinLobby(){
       {notice&&<p className="entry-error">{notice}</p>}
       <div className="test-logins"><span>Быстрый вход для домашнего теста</span><div><button onClick={()=>quick(demoCredentials.gm.pin)}>Ведущая</button><button onClick={()=>quick(demoCredentials.squads[0].pin)}>Отряд 1</button><button onClick={()=>quick(demoCredentials.players[0].pin)}>Игрок 1</button><button onClick={()=>quick(demoCredentials.common.pin)}>Общий экран</button></div></div>
       <a className="solo-entry-link" href="/solo"><b>Одиночная партия</b><span>Один игрок · одиннадцать автономных путников →</span></a>
-      <a className="legacy-link" href="/">Открыть прежний локальный пульт ведущей</a>
+      <a className="legacy-link" href="/room?code=TEST26&pin=2600">Открыть полный пульт ведущей</a>
     </section>
   </main>;
 }
 
-export function RoomConsole(){
+export function RoomConsole({defaultCode="TEST26",defaultPin=""}:{defaultCode?:string;defaultPin?:string}={}){
   const [credentials,setCredentials]=useState<{code:string;pin:string}|null>(null);
-  useEffect(()=>{const q=new URLSearchParams(window.location.search);setCredentials({code:(q.get("code")||"TEST26").toUpperCase(),pin:q.get("pin")||""});},[]);
+  useEffect(()=>{const q=new URLSearchParams(window.location.search);setCredentials({code:(q.get("code")||defaultCode).toUpperCase(),pin:q.get("pin")||defaultPin});},[defaultCode,defaultPin]);
   if(!credentials)return <LoadingScreen text="Считываем билет устройства…"/>;
   return <ConnectedRoom code={credentials.code} pin={credentials.pin}/>;
 }
@@ -96,9 +104,9 @@ function ConnectedRoom({code,pin}:{code:string;pin:string}){
   if(!room.payload&&!room.error)return <LoadingScreen text="Соединяемся с комнатой…"/>;
   if(!room.payload)return <main className="network-error"><div className="pixel-panel"><p className="pixel-kicker">Доступ закрыт</p><h1>{room.error}</h1><a href="/play">Вернуться ко входу</a></div></main>;
   const {viewer,state}=room.payload;
+  if(viewer.kind==="gm")return <GameConsole network={{code,state,busy:room.busy,act:room.act}} networkControls={<GmNetworkPanel state={state} busy={room.busy} act={room.act}/>}/>;
   return <main className={`network-shell view-${viewer.kind}`}>
     <NetworkHeader state={state} viewer={viewer} code={code} error={room.error}/>
-    {viewer.kind==="gm"&&<GmNetworkPanel state={state} busy={room.busy} act={room.act}/>} 
     {viewer.kind==="squad"&&<SquadPanel state={state} pair={viewer.pair}/>} 
     {viewer.kind==="player"&&<PlayerPhone state={state} playerId={viewer.playerId} busy={room.busy} act={room.act}/>} 
     {viewer.kind==="common"&&<CommonPanel state={state}/>} 
@@ -182,11 +190,28 @@ export function RolePortrait({index}:{index:number}){return <div className="role
 
 function StationBrief({nodeId}:{nodeId?:string}){if(!nodeId)return null;const node=nodeById.get(nodeId);const resource=stationResources[nodeId];const lore=stationLore[nodeId];const story=stationStories[nodeId];return <article className="station-brief pixel-panel"><span>Текущая станция</span><h3>{node?.name}</h3><b>{resource?.icon} {resource?.label}</b><p>{story?.fact||lore?.after2026||"Сведения о станции пока не подтверждены."}</p></article>}
 
+function networkTrackGeometry(edge:(typeof rawEdges)[number],direction:"forward"|"backward"){
+  const a=nodeById.get(edge.source),b=nodeById.get(edge.target);
+  if(!a||!b)return null;
+  const dx=b.x-a.x,dy=b.y-a.y,length=Math.max(1,Math.hypot(dx,dy));
+  const side=direction==="forward"?1:-1;
+  const ox=(-dy/length)*2.6*side,oy=(dx/length)*2.6*side;
+  return{x1:a.x+ox,y1:a.y+oy,x2:b.x+ox,y2:b.y+oy};
+}
+
+function networkTrackStyle(status:"normal"|"safe"|"unknown"|"closed",color:string){
+  if(status==="safe")return{stroke:"#3bd294",strokeWidth:5.5,opacity:.95};
+  if(status==="unknown")return{stroke:"#8b815f",strokeWidth:5.5,strokeDasharray:"3 7",opacity:.95};
+  if(status==="closed")return{stroke:"#171b18",strokeWidth:8,strokeDasharray:"12 4",opacity:1};
+  return{stroke:color,strokeWidth:3.5,opacity:.58};
+}
+
 export function MetroNetworkMap({state,focusIds,compact}:{state:NetworkSession;focusIds:string[];compact:boolean}){
   const [zoom,setZoom]=useState(1);const [query,setQuery]=useState("");const [selected,setSelected]=useState<string|null>(focusIds[0]||null);
   const center=selected?nodeById.get(selected):undefined;
   const k=fitTransform.k*zoom;const tx=center&&zoom>1?W/2-center.x*k:fitTransform.x*zoom+(W/2)*(1-zoom);const ty=center&&zoom>1?H/2-center.y*k:fitTransform.y*zoom+(H/2)*(1-zoom);
   const search=()=>{const q=query.trim().toLowerCase().replaceAll("ё","е");const found=mapNodes.find(n=>n.name.toLowerCase().replaceAll("ё","е").includes(q));if(found){setSelected(found.id);setZoom(3.2);}};
   const playerGroups=new Map<string,number>();state.players.slice(0,state.playerCount).filter(p=>p.lostLimbs.length<4).forEach(p=>playerGroups.set(p.position,(playerGroups.get(p.position)||0)+1));
-  return <div className={compact?"network-map compact":"network-map"}><div className="map-search"><input value={query} onChange={e=>setQuery(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")search();}} placeholder="Найти станцию"/><button onClick={search}>Найти</button></div><div className="network-map-zoom"><button onClick={()=>setZoom(v=>Math.min(5,v*1.35))}>+</button><button onClick={()=>setZoom(v=>Math.max(.75,v/1.35))}>−</button><button onClick={()=>{setZoom(1);setSelected(null);}}>Вся</button></div><svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Карта метро и позиции групп"><g transform={`translate(${tx} ${ty}) scale(${k})`}>{rawEdges.map(edge=>{const a=nodeById.get(edge.source),b=nodeById.get(edge.target);if(!a||!b)return null;const transfer=edge.type==="transfer";return <line key={edge.id} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={transfer?"#ae8b47":edge.color} strokeWidth={transfer?2.5:3.5} strokeDasharray={transfer?"3 3":undefined} opacity={transfer?.8:.48}/>;})}{mapNodes.map(node=>{const count=playerGroups.get(node.id)||0;const focus=focusIds.includes(node.id);return <g key={node.id} className={selected===node.id?"net-station selected":"net-station"} onClick={()=>setSelected(node.id)}><circle cx={node.x} cy={node.y} r={focus?5:2.5} fill={focus?"#d7ef53":node.color} stroke="#101612" strokeWidth={1}/>{count>0&&<><circle className="net-player-badge" cx={node.x+8} cy={node.y-8} r={7}/><text className="net-player-count" x={node.x+8} y={node.y-8}>{count}</text></>}{(focus||selected===node.id)&&<text x={node.x+8} y={node.y+4} className="net-station-name">{node.name}</text>}</g>;})}</g></svg>{selected&&<div className="map-fact"><span>{nodeById.get(selected)?.lineName}</span><b>{nodeById.get(selected)?.name}</b><p>{stationResources[selected]?.icon} {stationResources[selected]?.label||"Станция"}</p></div>}</div>;
+  const npcGroups=new Map<string,number>();Object.entries(state.world.npcPositions).forEach(([npcId,stationId])=>{if(state.world.npcOwners[npcId]==null&&!state.world.swallowedStations.includes(stationId))npcGroups.set(stationId,(npcGroups.get(stationId)||0)+1);});
+  return <div className={compact?"network-map compact":"network-map"}><div className="map-search"><input value={query} onChange={e=>setQuery(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")search();}} placeholder="Найти станцию"/><button onClick={search}>Найти</button></div><div className="network-map-zoom"><button onClick={()=>setZoom(v=>Math.min(5,v*1.35))}>+</button><button onClick={()=>setZoom(v=>Math.max(.75,v/1.35))}>−</button><button onClick={()=>{setZoom(1);setSelected(null);}}>Вся</button></div><svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Полная карта метро, два тоннеля между станциями и позиции групп"><g transform={`translate(${tx} ${ty}) scale(${k})`}>{rawEdges.flatMap(edge=>{const a=nodeById.get(edge.source),b=nodeById.get(edge.target);if(!a||!b)return[];if(edge.type==="transfer")return[<line key={edge.id} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="#ae8b47" strokeWidth={2.5} strokeDasharray="3 3" opacity={.8}/>];return(["forward","backward"] as const).map(direction=>{const geometry=networkTrackGeometry(edge,direction);const status=state.world.edges[`${edge.id}::${direction}`]||"normal";return geometry?<line key={`${edge.id}-${direction}`} {...geometry} {...networkTrackStyle(status,edge.color)} className={`network-track ${status}`}/>:null;});})}{mapNodes.map(node=>{const count=playerGroups.get(node.id)||0;const npcCount=npcGroups.get(node.id)||0;const focus=focusIds.includes(node.id);const swallowed=state.world.swallowedStations.includes(node.id);return <g key={node.id} className={`${selected===node.id?"net-station selected":"net-station"}${swallowed?" swallowed":""}`} onClick={()=>setSelected(node.id)}><circle cx={node.x} cy={node.y} r={focus?5:2.5} fill={swallowed?"#160f1b":focus?"#d7ef53":node.color} stroke={swallowed?"#9a6ab0":"#101612"} strokeWidth={swallowed?3:1}/>{count>0&&<><circle className="net-player-badge" cx={node.x+8} cy={node.y-8} r={7}/><text className="net-player-count" x={node.x+8} y={node.y-8}>{count}</text></>}{npcCount>0&&<><circle className="net-npc-badge" cx={node.x-8} cy={node.y-8} r={6}/><text className="net-npc-count" x={node.x-8} y={node.y-8}>{npcCount}</text></>}{(focus||selected===node.id)&&<text x={node.x+8} y={node.y+4} className="net-station-name">{node.name}</text>}</g>;})}</g></svg>{selected&&<div className="map-fact"><span>{nodeById.get(selected)?.lineName}</span><b>{nodeById.get(selected)?.name}</b><p>{state.world.swallowedStations.includes(selected)?"Чёрное нечто поглотило станцию":`${stationResources[selected]?.icon||""} ${stationResources[selected]?.label||"Станция"}`}</p><small>{npcGroups.get(selected)||0} NPC · {playerGroups.get(selected)||0} живых фигур</small></div>}</div>;
 }
