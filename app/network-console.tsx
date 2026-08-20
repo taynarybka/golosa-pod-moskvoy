@@ -78,6 +78,7 @@ export function JoinLobby(){
       <button className="pixel-primary" onClick={join}>Войти в комнату <span>→</span></button>
       {notice&&<p className="entry-error">{notice}</p>}
       <div className="test-logins"><span>Быстрый вход для домашнего теста</span><div><button onClick={()=>quick(demoCredentials.gm.pin)}>Ведущая</button><button onClick={()=>quick(demoCredentials.squads[0].pin)}>Отряд 1</button><button onClick={()=>quick(demoCredentials.players[0].pin)}>Игрок 1</button><button onClick={()=>quick(demoCredentials.common.pin)}>Общий экран</button></div></div>
+      <a className="solo-entry-link" href="/solo"><b>Одиночная партия</b><span>Один игрок · одиннадцать автономных путников →</span></a>
       <a className="legacy-link" href="/">Открыть прежний локальный пульт ведущей</a>
     </section>
   </main>;
@@ -177,11 +178,11 @@ function PlayerPhone({state,playerId,busy,act}:{state:NetworkSession;playerId:nu
 
 function CommonPanel({state}:{state:NetworkSession}){return <div className="common-layout"><div className="common-head"><p className="pixel-kicker">Общий терминал · без личных данных</p><h1>Карта живых</h1><p>{state.gmMessage}</p></div><MetroNetworkMap state={state} focusIds={state.players.slice(0,state.playerCount).filter(p=>p.lostLimbs.length<4).map(p=>p.position)} compact={false}/><aside className="common-log pixel-panel"><span>Последние публичные события</span>{state.log.slice(0,8).map(entry=><p key={entry.id}>{entry.text}</p>)}</aside></div>}
 
-function RolePortrait({index}:{index:number}){return <div className="role-portrait" style={{backgroundImage:"url('/npc-atlas-v1.png')",backgroundPosition:`${(index%5)*25}% ${Math.floor(index/5)*25}%`}} aria-hidden="true"/>;}
+export function RolePortrait({index}:{index:number}){return <div className="role-portrait" style={{backgroundImage:"url('/npc-atlas-v1.png')",backgroundPosition:`${(index%5)*25}% ${Math.floor(index/5)*25}%`}} aria-hidden="true"/>;}
 
 function StationBrief({nodeId}:{nodeId?:string}){if(!nodeId)return null;const node=nodeById.get(nodeId);const resource=stationResources[nodeId];const lore=stationLore[nodeId];const story=stationStories[nodeId];return <article className="station-brief pixel-panel"><span>Текущая станция</span><h3>{node?.name}</h3><b>{resource?.icon} {resource?.label}</b><p>{story?.fact||lore?.after2026||"Сведения о станции пока не подтверждены."}</p></article>}
 
-function MetroNetworkMap({state,focusIds,compact}:{state:NetworkSession;focusIds:string[];compact:boolean}){
+export function MetroNetworkMap({state,focusIds,compact}:{state:NetworkSession;focusIds:string[];compact:boolean}){
   const [zoom,setZoom]=useState(1);const [query,setQuery]=useState("");const [selected,setSelected]=useState<string|null>(focusIds[0]||null);
   const center=selected?nodeById.get(selected):undefined;
   const k=fitTransform.k*zoom;const tx=center&&zoom>1?W/2-center.x*k:fitTransform.x*zoom+(W/2)*(1-zoom);const ty=center&&zoom>1?H/2-center.y*k:fitTransform.y*zoom+(H/2)*(1-zoom);
