@@ -69,8 +69,60 @@ export const crisisCards: CrisisCard[] = [
   { id:"crisis-06", title:"Общий голос", trigger:"После появления второго мёртвого.", demand:"Всем живым приходит одна и та же фраза, а мёртвые слышат её наоборот.", options:["Опубликовать личные фрагменты","Сохранить секреты и заплатить 12 патронов","Доверить решение мёртвым"], result:"Выбор определяет, какие три фрагмента пророчества откроются следующими." },
 ];
 
+export type CordonProfile = { price:4|5|6; inspection:boolean; title:string; guardText:string };
+const specialCordons: Record<string,CordonProfile> = {
+  "transfer:1::библиотека им.ленина|9::боровицкая": { price:6, inspection:true, title:"Архивный кордон", guardText:"Центральный пост знает цену редким вещам и выбирает одного человека для полного досмотра." },
+  "transfer:1::библиотека им.ленина|3::арбатская": { price:5, inspection:true, title:"Западные ворота Полиса", guardText:"Документы смотрят быстро, но закрытые ёмкости и оружие вызывают вопросы." },
+  "transfer:1::проспект вернадского|11::проспект вернадского": { price:5, inspection:false, title:"Университетская проходная", guardText:"Обычная пошлина без досмотра, если группа не устраивает конфликт." },
+  "transfer:9::цветной бульвар|10::трубная": { price:4, inspection:false, title:"Трубный рынок", guardText:"Дешёвый неофициальный переход; охрана предпочитает патроны бумагам." },
+  "transfer:9::севастопольская|11::каховская": { price:5, inspection:false, title:"Южная таможня", guardText:"Цена фиксированная, очередь долгая, обычного досмотра нет." },
+  "transfer:3::электрозаводская|11::электрозаводская": { price:5, inspection:false, title:"Заводская проходная", guardText:"Пропускают группы по счёту фигур и не любят задерживать рабочих." },
+  "transfer:11::новаторская|16::новаторская": { price:5, inspection:false, title:"Научный кордон", guardText:"Пост требует назвать цель перехода, но вещи проверяет только при тревоге." },
+  "transfer:2::тверская|9::чеховская": { price:4, inspection:false, title:"Театральный лаз", guardText:"Дешёвый переход держится на устной договорённости двух станций." },
+  "transfer:6::калужская|11::воронцовская": { price:5, inspection:false, title:"Инженерный пост", guardText:"Инструменты пропускают спокойно; пошлина оплачивается до открытия двери." },
+  "transfer:7::пушкинская|9::чеховская": { price:5, inspection:false, title:"Пушкинский кордон", guardText:"Людей считают, имена не спрашивают, но переговоры ведут жёстко." },
+  "transfer:8A::мичуринский проспект|11::мичуринский проспект": { price:5, inspection:false, title:"Мичуринская перемычка", guardText:"Технический пост принимает стандартную плату и редко открывает сумки." },
+};
+
+export function getCordonProfile(edgeId:string):CordonProfile {
+  if (specialCordons[edgeId]) return specialCordons[edgeId];
+  const hash=[...edgeId].reduce((sum,char)=>sum+char.charCodeAt(0),0);
+  const price=([4,5,5,5,6] as const)[hash%5];
+  return { price, inspection:hash%3===0, title:price===4?"Малый кордон":price===6?"Укреплённый кордон":"Станционная таможня", guardText:hash%3===0?"Пост выбирает одного живого персонажа для полного досмотра.":"Обычная пошлина без досмотра." };
+}
+
+export const itemInspectionRisk:Record<string,0|1|2> = {
+  wire:0, cloth:0, tarp:0, rope:0, crowbar:2, wrench:1, chalk:0, flashlight:0,
+  battery:1, mirror:0, rat_spray:2, whistle:0, radio:1, tube:1, filter:0,
+  mask:1, boots:0, lighter:1, medkit:0, tourniquet:0, antiseptic:1, splint:0,
+  painkillers:2, hot_meal:0,
+};
+
+export const cordonChoices = [
+  "Положить названное число патронов на стойку.",
+  "Предъявить документы или разовый пропуск.",
+  "Заговорить с начальником поста и предложить сделку.",
+  "Попросить отдельный досмотр одного человека.",
+  "Отойти в тоннель, изменить состав группы или выбрать другой путь.",
+] as const;
+
 export const cordonRules = {
-  baseToll: 2,
-  description:"Любой переход между линиями, включая пересадочное ребро, автоматически является кордоном.",
-  calculate(size:number, time:string){ const groupSurcharge = Math.max(0, Math.ceil((size-4)/4)); const evening = time === "Вечер" ? 1 : 0; return this.baseToll + groupSurcharge + evening; },
+  baseToll:5,
+  description:"Любой переход между линиями автоматически является кордоном. Цена конкретного поста — 4, 5 или 6 патронов с группы до четырёх фигур.",
+  calculate(size:number,time:string,profilePrice:number=5,inspectionRisk:number=0){ const groupSurcharge=Math.max(0,Math.ceil((size-4)/4)); const evening=time==="Вечер"?1:0; return profilePrice+groupSurcharge+evening+Math.min(4,Math.max(0,inspectionRisk)); },
+};
+
+export const startCordonBalance:Record<string,{cordons:number;expectedToll:number;bonusBullets:number}> = {
+  "10::окружная":{cordons:2,expectedToll:10,bonusBullets:0},
+  "11::каширская":{cordons:2,expectedToll:11,bonusBullets:1},
+  "11::печатники":{cordons:2,expectedToll:10,bonusBullets:0},
+  "16::университет дружбы народов":{cordons:2,expectedToll:10,bonusBullets:0},
+  "2::водный стадион":{cordons:2,expectedToll:10,bonusBullets:0},
+  "2::речной вокзал":{cordons:2,expectedToll:10,bonusBullets:0},
+  "6::калужская":{cordons:2,expectedToll:10,bonusBullets:0},
+  "7::спартак":{cordons:2,expectedToll:11,bonusBullets:1},
+  "7::тушинская":{cordons:2,expectedToll:11,bonusBullets:1},
+  "8A::мичуринский проспект":{cordons:2,expectedToll:10,bonusBullets:0},
+  "8A::озерная":{cordons:2,expectedToll:10,bonusBullets:0},
+  "8A::раменки":{cordons:2,expectedToll:10,bonusBullets:0},
 };
