@@ -290,7 +290,7 @@ function MapPanel({ game, setGame, addLog, onCloseSafe }: { game: GameState; set
   };
   const centerNode = (id: string) => {
     const node = byId.get(id); if (!node) return;
-    setTransform({ k: 2.7, x: WIDTH / 2 - node.x * 2.7, y: HEIGHT / 2 - node.y * 2.7 });
+    setTransform({ k: 3.4, x: WIDTH / 2 - node.x * 3.4, y: HEIGHT / 2 - node.y * 3.4 });
   };
   const startMapDrag = (event: React.PointerEvent<SVGSVGElement>) => {
     drag.current = { x: event.clientX, y: event.clientY, tx: transform.x, ty: transform.y };
@@ -305,10 +305,19 @@ function MapPanel({ game, setGame, addLog, onCloseSafe }: { game: GameState; set
     setTransform((current) => ({ ...current, x: nextX, y: nextY }));
   };
   const stopMapDrag = () => { drag.current = null; };
-  const handleSearch = () => {
+  const findSearchNode = () => {
     const q = search.toLowerCase().replaceAll("ё", "е").trim();
-    const found = nodes.find((n) => n.name.toLowerCase().replaceAll("ё", "е").includes(q));
+    if (!q) return undefined;
+    return nodes.find((n) => n.name.toLowerCase().replaceAll("ё", "е") === q) || nodes.find((n) => n.name.toLowerCase().replaceAll("ё", "е").includes(q));
+  };
+  const handleSearch = () => {
+    const found = findSearchNode();
     if (found) { setSelected(found.id); centerNode(found.id); }
+  };
+  const focusSelectedOrSearch = () => {
+    const found = findSearchNode();
+    if (found) { setSelected(found.id); centerNode(found.id); return; }
+    if (selectedNode) centerNode(selectedNode.id);
   };
   const selectNode = (id: string) => { setSelected(id); if (mode !== "npc") setMovingNpcId(null); };
   const selectTrack = (edge: typeof tunnelEdges[number], direction: Direction) => {
@@ -400,7 +409,7 @@ function MapPanel({ game, setGame, addLog, onCloseSafe }: { game: GameState; set
           <label className="side-label" htmlFor="station-search">Найти станцию</label>
           <div className="search-row"><input id="station-search" list="station-list" value={search} onChange={(e) => setSearch(e.target.value)} onKeyDown={(e) => e.key === "Enter" && handleSearch()} placeholder="Например, Библиотека…" /><button onClick={handleSearch}>⌕</button></div>
           <datalist id="station-list">{uniqueNames.map((name) => <option key={name} value={name} />)}</datalist>
-          <div className="compact-actions"><button onClick={fit}>Показать всё</button><button onClick={() => selectedNode && centerNode(selectedNode.id)}>К выбранной</button></div>
+          <div className="compact-actions"><button onClick={fit}>Показать всё</button><button onClick={focusSelectedOrSearch}>К выбранной</button></div>
         </section>
         <section className="side-section grow">
           <p className="side-label">Выбрано</p>
@@ -435,6 +444,7 @@ function MapPanel({ game, setGame, addLog, onCloseSafe }: { game: GameState; set
               const resource = stationResources[node.id];
               const isSwallowed = game.swallowedStations.includes(node.id);
               return <g key={node.id} transform={`translate(${node.x} ${node.y})`} className={`station resource-${resource.kind} ${selected === node.id ? "selected" : ""} ${isPolis ? "polis" : ""} ${branchNodeIds.has(node.id) ? "branch" : ""} ${isStart ? "start" : ""} ${isSwallowed ? "swallowed" : ""}`} onPointerDown={(e) => e.stopPropagation()} onClick={() => selectNode(node.id)}>
+                {selected === node.id && <circle className="selected-ping" r="15" />}
                 <circle className="resource-ring" r={isStart ? 11.5 : 7.5} />
                 {branchNodeIds.has(node.id) && <rect className="branch-ring" x="-8" y="-8" width="16" height="16" transform="rotate(45)" />}
                 {isStart && <circle className="start-ring" r="9" />}
