@@ -5,25 +5,30 @@ import { metroData } from "./metro-data";
 import { scenarioEdgeMarks, scenarioNpcPositions, scenarioStartBriefs, scenarioStartNodeIds, stationResources } from "./scenario-data";
 import { stationLore } from "./station-lore";
 import { challengeCards, itemCards, type ChallengeCard } from "./card-data";
+import { cordonRules, crisisCards, npcCards, roleCards, timeRules } from "./game-data";
 
-type Tab = "map" | "players" | "wheel" | "death" | "log";
+type Tab = "map" | "players" | "npc" | "wheel" | "crisis" | "death" | "log";
 type Mode = "inspect" | "npc" | "safe" | "unknown" | "closed";
 type EdgeMark = "normal" | "safe" | "unknown" | "closed";
 type TimeOfDay = "Утро" | "День" | "Вечер" | "Ночь";
 type Direction = "forward" | "backward";
 type Transform = { x: number; y: number; k: number };
 type Limb = "leftArm" | "rightArm" | "leftLeg" | "rightLeg";
-type PlayerState = { name: string; health: number; lostLimbs: Limb[] };
+type PlayerState = { name: string; health: number; lostLimbs: Limb[]; roleId: string; bullets: number; position: string };
 type GameState = {
   round: number;
   activePair: number;
   time: TimeOfDay;
   players: PlayerState[];
+  activePlayerCount: 4 | 12;
   npcPositions: Record<string, string>;
+  npcOwners: Record<string, number | null>;
+  npcServiceUsed: Record<string, boolean>;
   npcMoveRounds: { gm: number; role: number };
   edges: Record<string, EdgeMark>;
   notes: Record<string, string>;
   swallowedStations: string[];
+  blackThread: { active: boolean; everyRounds: number; lastRound: number };
   log: string[];
 };
 
@@ -43,15 +48,8 @@ const FIT: Transform = { k: fitScale, x: WIDTH / 2 - fitScale * (bounds.x0 + bou
 const tunnelEdges = edges.filter((e) => e.type !== "transfer");
 const trackKey = (edgeId: string, direction: Direction) => `${edgeId}::${direction}`;
 const initialEdges = { ...scenarioEdgeMarks } as Record<string, EdgeMark>;
-const npcRoster = [
-  ["npc-01", "Тихон Путеец"], ["npc-02", "Майя Радио"], ["npc-03", "Сыч"], ["npc-04", "Доктор Ким"],
-  ["npc-05", "Лада"], ["npc-06", "Фома Крысолов"], ["npc-07", "Вера Гидролог"], ["npc-08", "Блик"],
-  ["npc-09", "Марта Таможня"], ["npc-10", "Егор Печник"], ["npc-11", "Сестра Лея"], ["npc-12", "Шрам"],
-  ["npc-13", "Аркадий Архив"], ["npc-14", "Нина Челнок"], ["npc-15", "Соня Проводник"], ["npc-16", "Рая Протезист"],
-  ["npc-17", "Юра Часовщик"], ["npc-18", "Комиссар Рута"], ["npc-19", "Господин Чай"], ["npc-20", "Аглая"],
-  ["npc-21", "Механик Дрон"], ["npc-22", "Рахим"], ["npc-23", "Моль"], ["npc-24", "Инга Нулевая"], ["npc-25", "Отец Пепел"],
-] as const;
-const initialNpcPositions: Record<string, string> = { ...scenarioNpcPositions };
+const npcRoster = npcCards.map((npc) => [npc.id, npc.name] as const);
+const initialNpcPositions: Record<string, string> = { ...scenarioNpcPositions, "npc-26": "2::новокузнецкая", "npc-27": "6::китай-город" };
 const branchNodeIds = new Set(nodes.filter((node) => tunnelEdges.filter((edge) => edge.source === node.id || edge.target === node.id).length > 2).map((node) => node.id));
 const legacyStartNodeIds = new Set([
   "1::бульвар рокоссовского", "1::румянцево", "2::речной вокзал", "2::царицыно",
@@ -152,8 +150,30 @@ const limbOptions: { id: Limb; label: string; short: string }[] = [
   { id: "leftLeg", label: "Левая нога", short: "Л · нога" },
   { id: "rightLeg", label: "Правая нога", short: "П · нога" },
 ];
-const initialPlayers: PlayerState[] = Array.from({ length: 12 }, (_, index) => ({ name: `Игрок ${String(index + 1).padStart(2, "0")}`, health: 10, lostLimbs: [] }));
-const initialState: GameState = { round: 1, activePair: 0, time: "Утро", players: initialPlayers, npcPositions: initialNpcPositions, npcMoveRounds: { gm: 0, role: -1 }, edges: initialEdges, notes: {}, swallowedStations: [], log: ["Партия создана. Утро. Первым действует отряд 1."] };
+const initialPlayers: PlayerState[] = Array.from({ length: 12 }, (_, index) => { const role = roleCards[index]; return { name: `Игрок ${String(index + 1).padStart(2, "0")}`, health: 10, lostLimbs: [], roleId: role.id, bullets: role.bullets, position: scenarioStartNodeIds[Math.floor(index / 2) % scenarioStartNodeIds.length] }; });
+const initialState: GameState = { round: 1, activePair: 0, time: "Утро", players: initialPlayers, activePlayerCount: 4, npcPositions: initialNpcPositions, npcOwners: {}, npcServiceUsed: {}, npcMoveRounds: { gm: 0, role: -1 }, edges: initialEdges, notes: {}, swallowedStations: [], blackThread: { active: false, everyRounds: 2, lastRound: 0 }, log: ["Тестовая партия создана: 2 пары, 4 личных экрана. Утро."] };
+
+function swallowOneEdgeState(current: GameState): GameState {
+  const swallowed = new Set(current.swallowedStations);
+  const candidates = nodes.filter((node) => !swallowed.has(node.id) && !/библиотека им/i.test(node.name)).map((node) => {
+    const activeEdges = tunnelEdges.filter((edge) => {
+      if (edge.source !== node.id && edge.target !== node.id) return false;
+      const other = edge.source === node.id ? edge.target : edge.source;
+      return !swallowed.has(other) && (current.edges[trackKey(edge.id, "forward")] !== "closed" || current.edges[trackKey(edge.id, "backward")] !== "closed");
+    });
+    return { node, activeEdges };
+  }).filter(({ activeEdges }) => activeEdges.length === 1);
+  if (!candidates.length) return { ...current, log:["Чёрное Нечто не нашло доступного края ветки.", ...current.log] };
+  const chosen = candidates[Math.floor(Math.random() * candidates.length)].node;
+  const nextEdges = { ...current.edges };
+  tunnelEdges.filter((edge) => edge.source === chosen.id || edge.target === chosen.id).forEach((edge) => { nextEdges[trackKey(edge.id, "forward")] = "closed"; nextEdges[trackKey(edge.id, "backward")] = "closed"; });
+  const npcPositions = { ...current.npcPositions };
+  const eaten = npcCards.filter((npc) => current.npcOwners[npc.id] == null && npcPositions[npc.id] === chosen.id);
+  eaten.forEach((npc) => { npcPositions[npc.id] = "__devoured__"; });
+  const victims = current.players.map((player, index) => index < current.activePlayerCount && player.lostLimbs.length < 4 && player.position === chosen.id ? index : -1).filter((index) => index >= 0);
+  const players = current.players.map((player, index) => victims.includes(index) ? { ...player, lostLimbs:["leftArm","rightArm","leftLeg","rightLeg"] as Limb[] } : player);
+  return { ...current, players, edges:nextEdges, npcPositions, swallowedStations:[...current.swallowedStations, chosen.id], log:[`Чёрное Нечто поглотило станцию ${chosen.name}.${eaten.length ? ` NPC: ${eaten.map((npc) => npc.name).join(", ")}.` : ""}${victims.length ? ` Погибли игроков: ${victims.length}.` : ""}`, ...current.log] };
+}
 
 const lightForms = [
   ["Эхо-проводник", "Ходит один по любым тоннелям; раз за игру открывает неизвестный перегон."],
@@ -172,7 +192,7 @@ function loadState(): GameState {
   if (typeof window === "undefined") return initialState;
   try {
     const parsed = JSON.parse(localStorage.getItem("metro-game-console-v4") || "null");
-    return parsed ? { ...initialState, ...parsed, players: initialPlayers.map((player, index) => { const stored = parsed.players?.[index]; return { ...player, ...(stored || {}), lostLimbs: Array.isArray(stored?.lostLimbs) ? stored.lostLimbs : [] }; }), npcPositions: { ...initialNpcPositions, ...(parsed.npcPositions || {}) }, npcMoveRounds: { ...initialState.npcMoveRounds, ...(parsed.npcMoveRounds || {}) }, edges: { ...initialEdges, ...(parsed.edges || {}) }, swallowedStations: Array.isArray(parsed.swallowedStations) ? parsed.swallowedStations : [] } : initialState;
+    return parsed ? { ...initialState, ...parsed, players: initialPlayers.map((player, index) => { const stored = parsed.players?.[index]; return { ...player, ...(stored || {}), lostLimbs: Array.isArray(stored?.lostLimbs) ? stored.lostLimbs : [] }; }), npcPositions: { ...initialNpcPositions, ...(parsed.npcPositions || {}) }, npcOwners: parsed.npcOwners || {}, npcServiceUsed: parsed.npcServiceUsed || {}, npcMoveRounds: { ...initialState.npcMoveRounds, ...(parsed.npcMoveRounds || {}) }, edges: { ...initialEdges, ...(parsed.edges || {}) }, swallowedStations: Array.isArray(parsed.swallowedStations) ? parsed.swallowedStations : [], blackThread: { ...initialState.blackThread, ...(parsed.blackThread || {}) } } : initialState;
   } catch { return initialState; }
 }
 
@@ -190,12 +210,15 @@ export function GameConsole() {
 
   const nextTurn = () => {
     setGame((g) => {
-      if (g.activePair < 5) {
+      const pairCount = g.activePlayerCount / 2;
+      if (g.activePair < pairCount - 1) {
         const activePair = g.activePair + 1;
         return { ...g, activePair, log: [`Ход передан отряду ${activePair + 1}.`, ...g.log] };
       }
       const round = g.round + 1;
-      return { ...g, round, activePair: 0, log: [`Мировая фаза завершена. Раунд ${round}: первым действует отряд 1. Караваны делают ${g.round % 2 ? "ход" : "остановку"}.`, ...g.log] };
+      const autoBlack = g.blackThread.active && round - g.blackThread.lastRound >= g.blackThread.everyRounds;
+      const base = { ...g, round, activePair: 0, blackThread: autoBlack ? { ...g.blackThread, lastRound: round } : g.blackThread, log: [`Мировая фаза завершена. Раунд ${round}: первым действует отряд 1. Караваны делают ${g.round % 2 ? "ход" : "остановку"}.`, ...g.log] };
+      return autoBlack ? swallowOneEdgeState(base) : base;
     });
   };
 
@@ -220,7 +243,7 @@ export function GameConsole() {
         </div>
         <div className="round-control">
           <button className={`time-button ${game.time === "Ночь" ? "night" : ""}`} onClick={advanceTime}><span>Общее время</span><b>{game.time}</b></button>
-          <div className="turn-readout"><span>Раунд {String(game.round).padStart(2, "0")} · ход отряда</span><strong>{String(game.activePair + 1).padStart(2, "0")}<small>/06</small></strong><em>{game.players[game.activePair * 2]?.name} · {game.players[game.activePair * 2 + 1]?.name}</em></div>
+          <div className="turn-readout"><span>Раунд {String(game.round).padStart(2, "0")} · ход отряда</span><strong>{String(game.activePair + 1).padStart(2, "0")}<small>/{String(game.activePlayerCount / 2).padStart(2, "0")}</small></strong><em>{game.players[game.activePair * 2]?.name} · {game.players[game.activePair * 2 + 1]?.name}</em></div>
           <button className="primary" onClick={nextTurn}>Следующий отряд <span>→</span></button>
         </div>
       </header>
@@ -228,15 +251,21 @@ export function GameConsole() {
       <nav className="tabs" aria-label="Разделы пульта">
         <TabButton active={tab === "map"} onClick={() => setTab("map")} icon="⌘">Карта</TabButton>
         <TabButton active={tab === "players"} onClick={() => setTab("players")} icon="♥">Игроки</TabButton>
+        <TabButton active={tab === "npc"} onClick={() => setTab("npc")} icon="♙">NPC</TabButton>
         <TabButton active={tab === "wheel"} onClick={() => setTab("wheel")} icon="▤">Карточки</TabButton>
+        <TabButton active={tab === "crisis"} onClick={() => setTab("crisis")} icon="⚠">Кризисы</TabButton>
         <TabButton active={tab === "death"} onClick={() => setTab("death")} icon="◇">После смерти</TabButton>
         <TabButton active={tab === "log"} onClick={() => setTab("log")} icon="≡">Журнал <b>{game.log.length}</b></TabButton>
         <div className="status"><span className="pulse" /> партия сохранена на устройстве</div>
       </nav>
 
+      <div className={`time-rule-strip ${game.time === "Ночь" ? "night" : ""}`}><b>{game.time}</b><span>{timeRules[game.time].boon}</span><i>{timeRules[game.time].pressure}</i></div>
+
       {tab === "map" && <MapPanel game={game} setGame={setGame} addLog={addLog} onCloseSafe={closeRandomSafe} />}
       {tab === "players" && <PlayersPanel game={game} setGame={setGame} addLog={addLog} />}
+      {tab === "npc" && <NpcPanel game={game} setGame={setGame} addLog={addLog} />}
       {tab === "wheel" && <ChallengeDeckPanel addLog={addLog} time={game.time} />}
+      {tab === "crisis" && <CrisisPanel addLog={addLog} />}
       {tab === "death" && <DeathPanel addLog={addLog} />}
       {tab === "log" && <LogPanel game={game} setGame={setGame} />}
     </main>
@@ -262,14 +291,14 @@ function MapPanel({ game, setGame, addLog, onCloseSafe }: { game: GameState; set
   const selectedLore = selectedNode ? stationLore[selectedNode.id] : undefined;
   const selectedTrack = selected ? parseTrack(selected) : undefined;
   const selectedEdge = selectedTrack ? tunnelEdges.find((e) => e.id === selectedTrack.edgeId) : undefined;
-  const npcHere = selectedNode ? npcRoster.filter(([id]) => game.npcPositions[id] === selectedNode.id) : [];
-  const reserveNpcs = npcRoster.filter(([id]) => !game.npcPositions[id]);
+  const npcHere = selectedNode ? npcRoster.filter(([id]) => game.npcOwners[id] == null && game.npcPositions[id] === selectedNode.id) : [];
+  const reserveNpcs = npcRoster.filter(([id]) => game.npcOwners[id] == null && !game.npcPositions[id]);
   const adjacentStations = movingNpcId && selectedNode ? tunnelEdges.filter((edge) => (edge.source === selectedNode.id || edge.target === selectedNode.id) && (game.edges[trackKey(edge.id, "forward")] !== "closed" || game.edges[trackKey(edge.id, "backward")] !== "closed")).map((edge) => byId.get(edge.source === selectedNode.id ? edge.target : edge.source)!).filter((node) => !game.swallowedStations.includes(node.id)).filter((node, index, all) => all.findIndex((other) => other.id === node.id) === index) : [];
   const uniqueNames = useMemo(() => [...new Set(nodes.map((n) => n.name))].sort((a, b) => a.localeCompare(b, "ru")), []);
   const liveTrackCounts = tunnelEdges.flatMap((edge) => (["forward", "backward"] as Direction[]).map((direction) => game.edges[trackKey(edge.id, direction)] || "normal")).reduce((counts, mark) => ({ ...counts, [mark]: counts[mark] + 1 }), { normal: 0, safe: 0, unknown: 0, closed: 0 } as Record<EdgeMark, number>);
   const liveResourceCounts = nodes.filter((node) => !game.swallowedStations.includes(node.id)).reduce((counts, node) => ({ ...counts, [stationResources[node.id].kind]: counts[stationResources[node.id].kind] + 1 }), { rice: 0, medkit: 0, wire: 0, curiosity: 0 });
   const lostNpcCount = npcRoster.filter(([id]) => game.npcPositions[id] === "__devoured__").length;
-  const activeNpcCount = npcRoster.filter(([id]) => Boolean(game.npcPositions[id]) && game.npcPositions[id] !== "__devoured__").length;
+  const activeNpcCount = npcRoster.filter(([id]) => game.npcOwners[id] == null && Boolean(game.npcPositions[id]) && game.npcPositions[id] !== "__devoured__").length;
 
   const fit = () => setTransform(FIT);
   const zoomBy = (factor: number) => {
@@ -349,34 +378,7 @@ function MapPanel({ game, setGame, addLog, onCloseSafe }: { game: GameState; set
     setGame((g) => { const npcPositions = { ...g.npcPositions }; delete npcPositions[npcId]; return { ...g, npcPositions, log: [`Подготовка: ${npc[1]} возвращён в резерв.`, ...g.log] }; });
     setMovingNpcId(null); setReserveNpcId(npcId);
   };
-  const swallowOuterStation = () => {
-    const swallowed = new Set(game.swallowedStations);
-    const activeNodes = nodes.filter((node) => !swallowed.has(node.id) && !/библиотека им/i.test(node.name));
-    const candidates = activeNodes.map((node) => {
-      const activeEdges = tunnelEdges.filter((edge) => {
-        if (edge.source !== node.id && edge.target !== node.id) return false;
-        const other = edge.source === node.id ? edge.target : edge.source;
-        if (swallowed.has(other)) return false;
-        return game.edges[trackKey(edge.id, "forward")] !== "closed" || game.edges[trackKey(edge.id, "backward")] !== "closed";
-      });
-      return { node, activeEdges };
-    }).filter(({ activeEdges }) => activeEdges.length === 1);
-    if (!candidates.length) { addLog("Чёрное нечто не нашло доступного края ветки."); return; }
-    const chosen = candidates[Math.floor(Math.random() * candidates.length)];
-    const eatenNpcs = npcRoster.filter(([id]) => game.npcPositions[id] === chosen.node.id);
-    setGame((current) => {
-      const nextEdges = { ...current.edges };
-      tunnelEdges.filter((edge) => edge.source === chosen.node.id || edge.target === chosen.node.id).forEach((edge) => {
-        nextEdges[trackKey(edge.id, "forward")] = "closed";
-        nextEdges[trackKey(edge.id, "backward")] = "closed";
-      });
-      const npcPositions = { ...current.npcPositions };
-      eatenNpcs.forEach(([id]) => { npcPositions[id] = "__devoured__"; });
-      const victims = eatenNpcs.length ? ` Погибли NPC: ${eatenNpcs.map(([, name]) => name).join(", ")}.` : "";
-      return { ...current, edges: nextEdges, npcPositions, swallowedStations: [...current.swallowedStations, chosen.node.id], log: [`Чёрное нечто поглотило станцию ${chosen.node.name}.${victims}`, ...current.log] };
-    });
-    setSelected(chosen.node.id);
-  };
+  const swallowOuterStation = () => setGame((current) => swallowOneEdgeState(current));
   const exportState = () => {
     const blob = new Blob([JSON.stringify(game, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = `metro-party-round-${game.round}.json`; a.click(); URL.revokeObjectURL(url);
@@ -412,12 +414,13 @@ function MapPanel({ game, setGame, addLog, onCloseSafe }: { game: GameState; set
           {selectedNode && <div className="selection-card"><span className="line-chip" style={{ background: selectedNode.color }}>{selectedNode.lineId}</span>{branchNodeIds.has(selectedNode.id) && <span className="branch-chip">развилка</span>}{startNodeIds.has(selectedNode.id) && <span className="start-chip">старт</span>}<h3>{selectedNode.name}</h3><p>{selectedNode.lineName}</p><dl><div><dt>NPC</dt><dd>{npcHere.length}</dd></div><div><dt>Ходовых тоннелей</dt><dd>{tunnelEdges.filter((e) => e.source === selectedNode.id || e.target === selectedNode.id).length * 2}</dd></div></dl>{selectedStart && <section className="start-brief"><div className="start-distance"><span>До Полиса</span><strong>{selectedStart.distance}</strong><small>{selectedStart.distance < 5 ? "хода" : "ходов"}</small></div><div><h4>История станции</h4><p>{selectedStart.history}</p><h4>Чем знаменита ветка</h4><p>{selectedStart.branch}</p><small>Кратчайший путь по базовому графу. Перекрытия и события увеличивают расстояние.</small></div></section>}{npcHere.length > 0 && <div className="npc-list"><span>NPC остаются на станции</span>{npcHere.map(([id, name]) => <div key={id} className="npc-actions"><button className={movingNpcId === id ? "npc-row active" : "npc-row"} onClick={() => { setMode("npc"); setMovingNpcId(id); }}>{name}<b>↗</b></button><button className="reserve-return" onClick={() => returnNpcToReserve(id)} title="Вернуть в резерв">×</button></div>)}</div>}{reserveNpcs.length > 0 && <div className="npc-place"><span>Разместить из резерва</span><select value={reserveNpcId} onChange={(e) => setReserveNpcId(e.target.value)}>{reserveNpcs.map(([id, name]) => <option key={id} value={id}>{name}</option>)}</select><button onClick={placeNpc}>Поставить на станцию</button></div>}{movingNpcId && <div className="npc-move"><div className="move-source"><button className={moveSource === "gm" ? "active" : ""} onClick={() => setMoveSource("gm")}>ГМ · 1/раунд</button><button className={moveSource === "role" ? "active" : ""} onClick={() => setMoveSource("role")}>Роль · раз/2 хода</button></div><p>Куда переместить на один перегон:</p>{adjacentStations.map((station) => <button key={station.id} onClick={() => moveNpc(station.id)}>{station.name}</button>)}</div>}<textarea placeholder="Заметка ведущего…" value={game.notes[selectedNode.id] || ""} onChange={(e) => setGame((g) => ({ ...g, notes: { ...g.notes, [selectedNode.id]: e.target.value } }))} /></div>}
           {selectedNode && selectedLore && <section className="station-lore"><article className="lore-fact"><span>До катастрофы · проверяемый факт</span><p>{selectedLore.fact}</p><a href={selectedLore.sourceUrl} target="_blank" rel="noreferrer">Источник: {selectedLore.sourceLabel} ↗</a></article><article className="lore-fiction"><span>После 2026 · лор игры</span><p>{selectedLore.after2026}</p></article></section>}
           {selectedNode && selectedResource && <div className={`station-resource ${selectedResource.kind} ${game.swallowedStations.includes(selectedNode.id) ? "swallowed" : ""}`}><b>{selectedResource.icon}</b><div><span>{game.swallowedStations.includes(selectedNode.id) ? "Поглощено" : "Добыча станции"}</span><strong>{game.swallowedStations.includes(selectedNode.id) ? "Чёрное нечто" : selectedResource.label}</strong><p>{game.swallowedStations.includes(selectedNode.id) ? "Станция, её добыча и оставшиеся NPC удалены из партии." : selectedResource.detail}</p></div></div>}
-          {selectedEdge && selectedTrack && <div className="selection-card"><span className={`edge-chip ${game.edges[trackKey(selectedEdge.id, selectedTrack.direction)] || "normal"}`}>{markLabel(game.edges[trackKey(selectedEdge.id, selectedTrack.direction)])}</span><h3>{trackName(selectedEdge, selectedTrack.direction)}</h3><p>{selectedEdge.lineName} · отдельный ходовой тоннель</p>{game.edges[trackKey(selectedEdge.id, selectedTrack.direction)] === "unknown" && <button className="primary full" onClick={reveal}>Разведать публично</button>}</div>}
+          {selectedEdge && selectedTrack && <div className="selection-card"><span className={`edge-chip ${game.edges[trackKey(selectedEdge.id, selectedTrack.direction)] || "normal"}`}>{markLabel(game.edges[trackKey(selectedEdge.id, selectedTrack.direction)])}</span><h3>{trackName(selectedEdge, selectedTrack.direction)}</h3><p>{selectedEdge.lineName} · отдельный ходовой тоннель</p>{byId.get(selectedEdge.source)?.lineId !== byId.get(selectedEdge.target)?.lineId && <div className="cordon-note"><b>КОРДОН</b><span>Межлинейный переход. Базовая пошлина: {cordonRules.baseToll} патрона с группы.</span></div>}{game.edges[trackKey(selectedEdge.id, selectedTrack.direction)] === "unknown" && <button className="primary full" onClick={reveal}>Разведать публично</button>}</div>}
         </section>
         <section className="side-section">
           <div className="stat-line"><span>Активных станций</span><strong>{nodes.length - game.swallowedStations.length}</strong></div><div className="stat-line"><span>Открыто / неизвестно / закрыто</span><strong>{liveTrackCounts.normal + liveTrackCounts.safe} / {liveTrackCounts.unknown} / {liveTrackCounts.closed}</strong></div><div className="stat-line"><span>Патроны / аптечки / проволока / разное</span><strong>{liveResourceCounts.rice} / {liveResourceCounts.medkit} / {liveResourceCounts.wire} / {liveResourceCounts.curiosity}</strong></div><div className="stat-line"><span>Стартовых точек</span><strong>{startNodeIds.size}</strong></div><div className="stat-line"><span>NPC на карте / в резерве / погибло</span><strong>{activeNpcCount} / {reserveNpcs.length} / {lostNpcCount}</strong></div>
           <button className="danger-line" onClick={onCloseSafe}>Закрыть случайный безопасный</button>
-          <button className="void-line" onClick={swallowOuterStation}>Чёрное нечто: поглотить край</button>
+          <div className="black-thread-control"><label><input type="checkbox" checked={game.blackThread.active} onChange={(e) => setGame((g) => ({...g, blackThread:{...g.blackThread, active:e.target.checked, lastRound:g.round}}))} /> Чёрное Нечто активно</label><label>Поглощение каждые <select value={game.blackThread.everyRounds} onChange={(e) => setGame((g) => ({...g, blackThread:{...g.blackThread, everyRounds:Number(e.target.value)}}))}><option value="1">1 раунд</option><option value="2">2 раунда</option><option value="3">3 раунда</option><option value="4">4 раунда</option></select></label></div>
+          <button className="void-line" onClick={swallowOuterStation}>Поглотить край сейчас</button>
         </section>
       </aside>
 
@@ -431,10 +434,11 @@ function MapPanel({ game, setGame, addLog, onCloseSafe }: { game: GameState; set
         <svg className="metro-map" viewBox={`0 0 ${WIDTH} ${HEIGHT}`} onWheel={(event) => { event.preventDefault(); zoomBy(Math.exp(-event.deltaY * .0012)); }} onPointerDown={startMapDrag} onPointerMove={moveMapDrag} onPointerUp={stopMapDrag} onPointerCancel={stopMapDrag} onLostPointerCapture={stopMapDrag}>
           <defs><filter id="glow"><feGaussianBlur stdDeviation="2.2" result="blur" /><feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge></filter><marker id="track-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="4" markerHeight="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="#172019" /></marker></defs>
           <g transform={`translate(${transform.x} ${transform.y}) scale(${transform.k})`}>
-            {edges.filter((edge) => edge.type === "transfer").map((edge) => { const a = byId.get(edge.source)!; const b = byId.get(edge.target)!; return <line key={edge.id} x1={a.x} y1={a.y} x2={b.x} y2={b.y} className="edge transfer" />; })}
+            {edges.filter((edge) => edge.type === "transfer").map((edge) => { const a = byId.get(edge.source)!; const b = byId.get(edge.target)!; return <g key={edge.id}><line x1={a.x} y1={a.y} x2={b.x} y2={b.y} className="edge transfer" /><text className="cordon-map" x={(a.x+b.x)/2} y={(a.y+b.y)/2}>▣</text></g>; })}
             {tunnelEdges.flatMap((edge) => (["forward", "backward"] as Direction[]).map((direction) => { const geometry = trackGeometry(edge, direction); const key = trackKey(edge.id, direction); const mark = game.edges[key] || "normal"; return <line key={key} x1={geometry.x1} y1={geometry.y1} x2={geometry.x2} y2={geometry.y2} stroke={edge.color} markerEnd={transform.k > 1.45 ? "url(#track-arrow)" : undefined} className={`edge track ${mark} ${selected === key ? "selected" : ""}`} onPointerDown={(e) => e.stopPropagation()} onClick={() => selectTrack(edge, direction)} />; }))}
             {nodes.map((node) => {
-              const count = npcRoster.filter(([id]) => game.npcPositions[id] === node.id).length;
+              const count = npcRoster.filter(([id]) => game.npcOwners[id] == null && game.npcPositions[id] === node.id).length;
+              const playersHere = game.players.map((player,index) => ({player,index})).filter(({player,index}) => index < game.activePlayerCount && player.position === node.id && player.lostLimbs.length < 4);
               const isPolis = /библиотека им/i.test(node.name);
               const isStart = startNodeIds.has(node.id);
               const resource = stationResources[node.id];
@@ -446,6 +450,7 @@ function MapPanel({ game, setGame, addLog, onCloseSafe }: { game: GameState; set
                 {isStart && <circle className="start-ring" r="9" />}
                 <circle className="station-core" r={isPolis ? 7 : 4.5} fill={node.color} />
                 {count > 0 && <><circle className="npc-badge" cx="7" cy="-7" r="6" /><text className="npc-count" x="7" y="-7">{count}</text></>}
+                {playersHere.length > 0 && <><circle className="player-map-badge" cx="-8" cy="-8" r="7" /><text className="player-map-count" x="-8" y="-8">{playersHere.length}</text></>}
                 {(transform.k > 2.25 || selected === node.id || isPolis || isStart) && <text className="station-name" x="8" y="-7">{isSwallowed ? `ПОГЛОЩЕНО · ${node.name}` : isPolis ? `ПОЛИС · ${node.name}` : isStart ? `СТАРТ · ${node.name}` : node.name}</text>}
               </g>;
             })}
@@ -465,25 +470,28 @@ function trackGeometry(edge: typeof tunnelEdges[number], direction: Direction) {
 function markLabel(mark?: EdgeMark) { return mark === "safe" ? "Открыт · безопасен" : mark === "unknown" ? "Непонятный" : mark === "closed" ? "Закрыт" : "Открытый"; }
 
 function PlayersPanel({ game, setGame, addLog }: { game: GameState; setGame: React.Dispatch<React.SetStateAction<GameState>>; addLog: (s: string) => void }) {
-  const updatePlayer = (index: number, patch: Partial<PlayerState>) => {
-    setGame((current) => ({ ...current, players: current.players.map((player, playerIndex) => playerIndex === index ? { ...player, ...patch } : player) }));
-  };
-  const adjustPersonalHealth = (index: number, delta: number) => {
-    const player = game.players[index];
-    const health = Math.max(0, Math.min(10, player.health + delta));
-    updatePlayer(index, { health });
-  };
-  const toggleLimb = (index: number, limb: Limb) => {
-    const player = game.players[index];
-    const wasLost = player.lostLimbs.includes(limb);
-    const lostLimbs = wasLost ? player.lostLimbs.filter((item) => item !== limb) : [...player.lostLimbs, limb];
-    updatePlayer(index, { lostLimbs });
-    const label = limbOptions.find((item) => item.id === limb)?.label.toLowerCase();
-    addLog(wasLost ? `${player.name}: восстановлена ${label}.` : lostLimbs.length === 4 ? `${player.name} потерял все четыре конечности и погиб.` : `${player.name}: потеряна ${label}.`);
-  };
-  const restoreAll = () => setGame((current) => ({ ...current, players: current.players.map((player) => ({ ...player, health: 10, lostLimbs: [] })), log: ["Ранения игроков и личные шкалы ведущей сброшены.", ...current.log] }));
+  const updatePlayer = (index:number, patch:Partial<PlayerState>) => setGame((current) => ({...current, players:current.players.map((player,i) => i === index ? {...player,...patch} : player)}));
+  const toggleLimb = (index:number, limb:Limb) => { const player=game.players[index]; const wasLost=player.lostLimbs.includes(limb); const lostLimbs=wasLost ? player.lostLimbs.filter((item)=>item!==limb) : [...player.lostLimbs,limb]; updatePlayer(index,{lostLimbs}); addLog(wasLost ? `${player.name}: конечность восстановлена.` : lostLimbs.length===4 ? `${player.name} погиб и исчез с публичной карты.` : `${player.name}: потеряна конечность ${lostLimbs.length}/4.`); };
+  const activePlayers=game.players.slice(0,game.activePlayerCount);
+  return <section className="tool-page players-page"><div className="tool-intro"><p className="eyebrow">Онлайн-пул ролей</p><h2>Персонажи и позиции</h2><p>Публично видны имя роли, открытый факт и точная станция. Инвентарь, личная цель и секрет остаются на телефоне. После четвёртой потерянной конечности фигурка автоматически исчезает с карты.</p></div><div className="players-toolbar session-mode"><span>Режим партии: <strong>{game.activePlayerCount===4 ? "тест · 2 пары" : "полный · 6 пар"}</strong></span><button className={game.activePlayerCount===4 ? "active" : ""} onClick={()=>setGame((g)=>({...g,activePlayerCount:4,activePair:Math.min(g.activePair,1)}))}>2 пары</button><button className={game.activePlayerCount===12 ? "active" : ""} onClick={()=>setGame((g)=>({...g,activePlayerCount:12}))}>6 пар</button><span>Живы: <strong>{activePlayers.filter((p)=>p.lostLimbs.length<4).length}</strong> / {activePlayers.length}</span></div><div className="players-grid role-grid">{activePlayers.map((player,index)=>{ const role=roleCards.find((entry)=>entry.id===player.roleId) || roleCards[index]; const lostCount=player.lostLimbs.length; const owned=npcCards.filter((npc)=>game.npcOwners[npc.id]===index); return <article className={`player-card role-card ${lostCount===4?"dead":lostCount===3?"critical":""}`} key={index}><div className="player-head"><span>{String(index+1).padStart(2,"0")}</span><input value={player.name} onChange={(e)=>updatePlayer(index,{name:e.target.value})}/><strong>{lostCount===4?"Погиб":`Пара ${role.pair}`}</strong></div><div className="role-title"><div><small>{role.pairName}</small><h3>{role.name}</h3></div><b>◉ {player.bullets}</b></div><p className="public-fact"><span>Публично</span>{role.publicFact}</p><p className="role-history">{role.history}</p><details><summary>Личная карта ведущей</summary><p><b>Способность.</b> {role.ability}</p>{role.upgrade&&<p><b>Усиление.</b> {role.upgrade}</p>}<p><b>Цель.</b> {role.goal}</p><p><b>Старт.</b> {role.items.join(" · ")}</p></details><label className="player-position">Текущая станция<select value={player.position} disabled={lostCount===4} onChange={(e)=>{updatePlayer(index,{position:e.target.value}); addLog(`${player.name} перемещён на ${byId.get(e.target.value)?.name}.`);}}>{nodes.slice().sort((a,b)=>a.name.localeCompare(b.name,"ru")).map((node)=><option key={node.id} value={node.id}>{node.name} · {node.lineId}</option>)}</select></label>{owned.length>0&&<div className="owned-npcs"><span>Личные NPC</span>{owned.map((npc)=><b key={npc.id}>{npc.kind==="animal"?"◈":"♙"} {npc.name}</b>)}</div>}<div className="limbs">{limbOptions.map((limb)=>{const lost=player.lostLimbs.includes(limb.id); return <button className={lost?"limb lost":"limb"} key={limb.id} onClick={()=>toggleLimb(index,limb.id)}><span>{limb.short}</span><b>{lost?"потеряна":"цела"}</b></button>;})}</div><div className="personal-health"><p><span>♥ Личная шкала ведущей</span><small>не правило</small></p><div className="hearts">{Array.from({length:10},(_,heart)=><button key={heart} className={heart<player.health?"heart active":"heart"} onClick={()=>updatePlayer(index,{health:heart+1})}>♥</button>)}</div></div></article>;})}</div></section>;
+}
 
-  return <section className="tool-page players-page"><div className="tool-intro"><p className="eyebrow">Состояние отрядов</p><h2>Ранения игроков</h2><p>Ранение может отнять руку или ногу. После потери всех четырёх конечностей персонаж погибает и переходит к разделу «После смерти».</p></div><div className="players-toolbar"><span>Живы: <strong>{game.players.filter((player) => player.lostLimbs.length < 4).length}</strong> / {game.players.length}</span><button onClick={restoreAll}>Сбросить ранения</button></div><div className="players-grid">{game.players.map((player, index) => { const lostCount = player.lostLimbs.length; const status = lostCount === 4 ? "Погиб" : lostCount === 3 ? "При смерти" : lostCount > 0 ? `Ранен · ${lostCount}/4` : "Цел"; return <article className={`player-card ${lostCount === 4 ? "dead" : lostCount === 3 ? "critical" : ""}`} key={index}><div className="player-head"><span>{String(index + 1).padStart(2, "0")}</span><input value={player.name} aria-label={`Имя игрока ${index + 1}`} onChange={(event) => updatePlayer(index, { name: event.target.value })} /><strong>{status}</strong></div><div className="limbs" aria-label={`Потеряно конечностей: ${lostCount} из 4`}>{limbOptions.map((limb) => { const lost = player.lostLimbs.includes(limb.id); return <button type="button" className={lost ? "limb lost" : "limb"} key={limb.id} onClick={() => toggleLimb(index, limb.id)} aria-pressed={lost}><span>{limb.short}</span><b>{lost ? "потеряна" : "цела"}</b></button>; })}</div><div className="personal-health"><p><span>♥ Личная шкала ведущей</span><small>не игровое правило</small></p><div className="hearts" aria-label={`${player.health} из 10 личных отметок`}>{Array.from({ length: 10 }, (_, heartIndex) => <button type="button" className={heartIndex < player.health ? "heart active" : "heart"} key={heartIndex} onClick={() => updatePlayer(index, { health: heartIndex + 1 })} aria-label={`Установить ${heartIndex + 1} личных отметок`}>♥</button>)}</div><div className="health-actions"><button onClick={() => adjustPersonalHealth(index, -1)} disabled={player.health === 0} aria-label={`Уменьшить личную шкалу ${player.name}`}>−</button><span>{player.health}/10</span><button onClick={() => adjustPersonalHealth(index, 1)} disabled={player.health === 10} aria-label={`Увеличить личную шкалу ${player.name}`}>+</button></div></div></article>; })}</div></section>;
+function NpcPanel({game,setGame,addLog}:{game:GameState;setGame:React.Dispatch<React.SetStateAction<GameState>>;addLog:(s:string)=>void}) {
+  const [filter,setFilter]=useState<"all"|"station"|"hired"|"used"|"animal">("all");
+  const activePlayers=game.players.slice(0,game.activePlayerCount);
+  const cards=npcCards.filter((npc)=>filter==="all" || (filter==="station"&&game.npcOwners[npc.id]==null&&game.npcPositions[npc.id]!=="__devoured__") || (filter==="hired"&&game.npcOwners[npc.id]!=null) || (filter==="used"&&game.npcServiceUsed[npc.id]) || (filter==="animal"&&npc.kind==="animal"));
+  const hire=(npcId:string,owner:number)=>{ const npc=npcCards.find((entry)=>entry.id===npcId)!; const player=game.players[owner]; if(player.bullets<npc.price){addLog(`${player.name}: не хватает патронов для найма ${npc.name}.`);return;} if(game.npcPositions[npcId]!==player.position){addLog(`${npc.name} и ${player.name} находятся на разных станциях.`);return;} setGame((g)=>({...g,players:g.players.map((p,i)=>i===owner?{...p,bullets:p.bullets-npc.price}:p),npcOwners:{...g.npcOwners,[npcId]:owner},log:[`${player.name} нанял ${npc.name} за ${npc.price} патронов.`,...g.log]}));};
+  const transfer=(npcId:string,owner:number)=>setGame((g)=>({...g,npcOwners:{...g.npcOwners,[npcId]:owner},log:[`${npcCards.find((n)=>n.id===npcId)?.name} передан персонажу ${g.players[owner].name}.`,...g.log]}));
+  const use=(npcId:string)=>setGame((g)=>({...g,npcServiceUsed:{...g.npcServiceUsed,[npcId]:true},log:[`Одноразовая услуга NPC «${npcCards.find((n)=>n.id===npcId)?.name}» применена.`,...g.log]}));
+  const release=(npcId:string)=>setGame((g)=>{const owner=g.npcOwners[npcId];const npcOwners={...g.npcOwners};delete npcOwners[npcId];return{...g,npcOwners,npcPositions:{...g.npcPositions,[npcId]:owner==null?g.npcPositions[npcId]:g.players[owner].position},log:[`NPC ${npcCards.find((n)=>n.id===npcId)?.name} оставлен на станции.`,...g.log]};});
+  return <section className="tool-page npc-page"><div className="tool-intro"><p className="eyebrow">Одноразовые спутники</p><h2>Карточки NPC</h2><p>NPC принадлежит конкретному персонажу, а не отряду. При разделении карточка остаётся в телефоне владельца. После применения услуги её текст исчезает, но NPC можно продолжать вести или принести в жертву.</p></div><div className="deck-switch">{([['all','Все'],['station','На станциях'],['hired','Наняты'],['used','Использованы'],['animal','Животные']] as const).map(([id,label])=><button key={id} className={filter===id?"active":""} onClick={()=>setFilter(id)}>{label}</button>)}</div><div className="npc-card-grid">{cards.map((npc)=>{const owner=game.npcOwners[npc.id];const used=game.npcServiceUsed[npc.id];const location=game.npcPositions[npc.id];const station=byId.get(location);const ownerPlayer=owner==null?undefined:game.players[owner];const eligible=activePlayers.map((player,index)=>({player,index})).filter(({player})=>player.lostLimbs.length<4&&(owner==null?player.position===location:player.position===ownerPlayer?.position));return <article className={`npc-card ${used?"used":""} ${location==="__devoured__"?"devoured":""}`} key={npc.id}><div className="npc-art" style={npc.kind==="human"?{backgroundImage:"url('/npc-atlas-v1.png')",backgroundPosition:`${(npc.portrait%5)*25}% ${Math.floor(npc.portrait/5)*25}%`}:undefined}>{npc.kind==="animal"&&<span>{npc.id==="npc-26"?"🐕":"🐈"}</span>}<b>{npc.price}<small>◉</small></b></div><div className="npc-card-copy"><small>{npc.kind==="animal"?"Животное":"Человек"} · {npc.id}</small><h3>{npc.name}</h3><p>{npc.history}</p><div className="npc-service"><span>Одноразовая услуга</span>{used?<strong>УСЛУГА ИСПОЛЬЗОВАНА</strong>:<p>{npc.service}</p>}</div><div className="npc-status">{location==="__devoured__"?<b>Поглощён</b>:ownerPlayer?<b>Владелец: {ownerPlayer.name}</b>:<b>Станция: {station?.name||"резерв"}</b>}</div>{location!=="__devoured__"&&<div className="npc-controls"><select defaultValue="" onChange={(e)=>{if(!e.target.value)return; const next=Number(e.target.value); owner==null?hire(npc.id,next):transfer(npc.id,next); e.currentTarget.value="";}}><option value="">{owner==null?"Нанять персонажем…":"Передать персонажу…"}</option>{eligible.map(({player,index})=><option value={index} key={index}>{player.name} · {byId.get(player.position)?.name}</option>)}</select>{owner!=null&&!used&&<button onClick={()=>use(npc.id)}>Применить услугу</button>}{owner!=null&&<button onClick={()=>release(npc.id)}>Оставить</button>}</div>}</div></article>;})}</div></section>;
+}
+
+function CrisisPanel({addLog}:{addLog:(s:string)=>void}) {
+  const [selected,setSelected]=useState(crisisCards[0].id);
+  const [resolved,setResolved]=useState<string[]>([]);
+  const crisis=crisisCards.find((card)=>card.id===selected)!;
+  return <section className="tool-page crisis-page"><div className="tool-intro"><p className="eyebrow">Общая локальная сцена</p><h2>Кризисы метро</h2><p>Кризис всегда заканчивается и возвращает игру к карте. Игроки коллективно выбирают цену; невыполненные условия меняют мир, а не блокируют партию.</p></div><div className="crisis-layout"><aside>{crisisCards.map((card)=><button key={card.id} className={selected===card.id?"active":""} onClick={()=>setSelected(card.id)}><span>{card.id.replace("crisis-","")}</span><b>{card.title}</b><small>{resolved.includes(card.id)?"разрешён":"готов"}</small></button>)}</aside><article className="crisis-card"><div><span>Условие запуска</span><p>{crisis.trigger}</p></div><h3>{crisis.title}</h3><p className="crisis-demand">{crisis.demand}</p><section><span>Варианты общей цены</span>{crisis.options.map((option,index)=><p key={option}><b>{index+1}</b>{option}</p>)}</section><div className="crisis-result"><span>Не стопорит игру</span><p>{crisis.result}</p></div><button className="primary full" onClick={()=>{setResolved((current)=>current.includes(crisis.id)?current:[...current,crisis.id]);addLog(`Кризис «${crisis.title}» разрешён.`);}}>Разрешить и записать</button></article></div></section>;
 }
 
 function ChallengeDeckPanel({ addLog, time }: { addLog: (s: string) => void; time: TimeOfDay }) {
