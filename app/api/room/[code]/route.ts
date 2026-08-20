@@ -20,7 +20,10 @@ async function ensureTable() {
 async function readOrCreate(code: string): Promise<NetworkSession> {
   await ensureTable();
   const row = await env.DB.prepare("SELECT state_json FROM game_rooms WHERE code = ?").bind(code).first<{ state_json: string }>();
-  if (row?.state_json) return JSON.parse(row.state_json) as NetworkSession;
+  if (row?.state_json) {
+    const stored=JSON.parse(row.state_json) as NetworkSession;
+    return {...stored,resolvedPairs:stored.resolvedPairs||[],crisisStatus:stored.crisisStatus||"inactive"};
+  }
   const state = createDemoSession(code);
   await env.DB.prepare("INSERT OR IGNORE INTO game_rooms (code, state_json, revision) VALUES (?, ?, ?)")
     .bind(code, JSON.stringify(state), state.revision).run();
@@ -66,7 +69,10 @@ function resolveMovement(state: NetworkSession) {
   });
   active.filter((player)=>player.intent==="stay").forEach((player)=>{
     const resource=stationResources[player.position];
-    if(resource?.kind==="rice"){player.bullets+=1;notes.push(`${player.name} остался на станции и добыл 1 патрон.`);}
+    if(resource?.kind==="rice"){
+      if(state.crisisStatus==="active") notes.push(`${player.name} остался на станции, но во время кризиса патроны не производятся.`);
+      else {player.bullets+=1;notes.push(`${player.name} остался на станции и добыл 1 патрон.`);}
+    }
     else if(resource?.kind==="medkit"){player.inventory.push("medkit");notes.push(`${player.name} получил аптечку.`);}
     else if(resource?.kind==="wire"){player.inventory.push("wire");notes.push(`${player.name} получил проволоку.`);}
     else notes.push(`${player.name} остался на станции и открыл локальную сцену.`);
@@ -102,7 +108,7 @@ export async function POST(request: Request, context: RouteContext) {
       return Response.json({ error: "Состояние уже изменилось на другом устройстве.", state: projectSession(current, viewer) }, { status: 409 });
     }
     const changed = applySessionAction(current, body.action, viewer);
-    if (body.action.type === "gm-next-phase" && current.phase === "challenge" && changed.phase === "resolution") resolveMovement(changed);
+    if (current.phase === "challenge" && changed.phase === "resolution") resolveMovement(changed);
     changed.revision = current.revision + 1;
     const result = await env.DB.prepare("UPDATE game_rooms SET state_json = ?, revision = ?, updated_at = CURRENT_TIMESTAMP WHERE code = ? AND revision = ?")
       .bind(JSON.stringify(changed), changed.revision, code, current.revision).run();

@@ -9,6 +9,7 @@ import { metroData } from "./metro-data";
 import { demoCredentials, type NetworkSession, type SessionAction, type Viewer } from "./network-session";
 import { scenarioEdgeMarks as rawScenarioEdgeMarks, stationResources } from "./scenario-data";
 import { stationLore } from "./station-lore";
+import { stationStories } from "./station-stories";
 
 const scenarioEdgeMarks: Record<string, string> = rawScenarioEdgeMarks;
 
@@ -115,15 +116,16 @@ function GmNetworkPanel({state,busy,act}:{state:NetworkSession;busy:boolean;act:
   useEffect(()=>setMessage(state.gmMessage),[state.gmMessage]);
   return <div className="gm-network-layout">
     <aside className="gm-command pixel-panel"><p className="pixel-kicker">Контроль партии</p><h2>{phaseLabels[state.phase]}</h2><p className="gm-phase-copy">{state.phase==="planning"?"Игроки принимают личные решения. Пока ведущая не откроет их, пары могут только договариваться.":state.phase==="reveal"?"Решения открыты. Несовпадение внутри пары создаёт разделение или сцену предательства.":state.phase==="challenge"?"Выберите карточку испытания и проведите ручное решение.":"Зафиксируйте потери, перемещение и награды перед новым раундом."}</p>
-      <button disabled={busy} className="pixel-primary" onClick={()=>act({type:"gm-next-phase"})}>{state.phase==="resolution"?"Начать новый раунд":"Следующая фаза"}<span>→</span></button>
+      {state.phase==="challenge"?<button disabled={busy} className="pixel-primary" onClick={()=>act({type:"gm-resolve-pair",pair:state.activePair})}>Завершить ход отряда {state.activePair}<span>✓</span></button>:<button disabled={busy||state.phase==="planning"} className="pixel-primary" onClick={()=>act({type:"gm-next-phase"})}>{state.phase==="planning"?"Ждём все решения":state.phase==="resolution"?"Начать новый раунд":"Перейти к испытаниям"}<span>→</span></button>}
       <div className="gm-switch"><button className={state.playerCount===4?"active":""} onClick={()=>act({type:"gm-set-player-count",count:4})}>Тест · 2 пары</button><button className={state.playerCount===12?"active":""} onClick={()=>act({type:"gm-set-player-count",count:12})}>Полная · 6 пар</button></div>
       <label>Сообщение всем<textarea value={message} onChange={e=>setMessage(e.target.value)}/></label><button onClick={()=>act({type:"gm-set-message",message})}>Передать на экраны</button>
       <label>Активное испытание<select value={state.activeChallenge||""} onChange={e=>act({type:"gm-set-challenge",challengeId:e.target.value||null})}><option value="">Нет испытания</option>{challengeCards.map(card=><option key={card.id} value={card.id}>{card.title} · {card.category}</option>)}</select></label>
+      <div className={`gm-crisis-control ${state.crisisStatus}`}><span>Общий кризис</span><b>{state.crisisStatus==="inactive"?"ожидает":state.crisisStatus==="active"?"Квадрат в кольце · активен":"разрешён"}</b><p>{state.crisisStatus==="active"?"Патроны не производятся. Чёрное Нечто движется вдвое быстрее.":"Ведущая запускает кризис после первого полного цикла суток."}</p><div><button disabled={busy||state.crisisStatus==="active"} onClick={()=>act({type:"gm-set-crisis",status:"active"})}>Запустить</button><button disabled={busy||state.crisisStatus!=="active"} onClick={()=>act({type:"gm-set-crisis",status:"resolved"})}>Разрешить</button></div></div>
       <button className="danger-quiet" onClick={()=>{if(window.confirm("Сбросить тестовую комнату и все решения?"))act({type:"gm-reset"});}}>Сбросить тестовую комнату</button>
     </aside>
     <section className="gm-live">
       <div className="network-message"><span>Передача ведущей</span><p>{state.gmMessage}</p></div>
-      <div className="gm-pair-tabs">{Array.from({length:state.playerCount/2},(_,i)=>i+1).map(pair=><button key={pair} className={state.activePair===pair?"active":""} onClick={()=>act({type:"gm-set-active-pair",pair})}><span>Отряд {pair}</span><b>{active.filter(p=>p.pair===pair&&p.ready).length}/2 решения</b></button>)}</div>
+      <div className="gm-pair-tabs">{Array.from({length:state.playerCount/2},(_,i)=>i+1).map(pair=><button key={pair} className={`${state.activePair===pair?"active":""} ${state.resolvedPairs.includes(pair)?"resolved":""}`} onClick={()=>act({type:"gm-set-active-pair",pair})}><span>Отряд {pair}</span><b>{state.resolvedPairs.includes(pair)?"ход завершён":`${active.filter(p=>p.pair===pair&&p.ready).length}/2 решения`}</b></button>)}</div>
       <div className="gm-player-grid">{active.map((player,index)=><GmPlayerCard key={player.id} player={player} index={index} phase={state.phase} act={act}/>)}</div>
     </section>
     <aside className="gm-event-feed pixel-panel"><p className="pixel-kicker">Живая лента</p><div className="device-meter"><span>Устройства игроков</span><b>{active.filter(p=>p.onlineAt&&Date.now()-p.onlineAt<15000).length}<small>/{active.length}</small></b></div><div className="event-list">{state.log.slice(0,16).map(entry=><article key={entry.id}><time>{new Date(entry.at).toLocaleTimeString("ru-RU",{hour:"2-digit",minute:"2-digit"})}</time><p>{entry.text}</p></article>)}</div></aside>
@@ -138,10 +140,25 @@ function GmPlayerCard({player,index,phase,act}:{player:NetworkSession["players"]
 function SquadPanel({state,pair}:{state:NetworkSession;pair:number}){
   const players=state.players.filter(player=>player.pair===pair);
   const current=players[0]?.position;
+  const [screen,setScreen]=useState<"map"|"players"|"table">("map");
   return <div className="squad-layout">
-    <section className="squad-map-panel"><div className="squad-title"><div><p className="pixel-kicker">Штаб отряда {pair}</p><h1>{players.map(p=>roleCards.find(r=>r.id===p.roleId)?.name).join(" + ")}</h1></div><div className="squad-ready"><span>Личные решения</span><b>{players.filter(p=>p.ready).length}/2</b></div></div><MetroNetworkMap state={state} focusIds={players.map(p=>p.position)} compact={false}/></section>
+    <section className="squad-map-panel"><div className="squad-title"><div><p className="pixel-kicker">Штаб отряда {pair}</p><h1>{players.map(p=>roleCards.find(r=>r.id===p.roleId)?.name).join(" + ")}</h1></div><div className="squad-ready"><span>Личные решения</span><b>{players.filter(p=>p.ready).length}/2</b></div></div>
+      <nav className="squad-screen-tabs"><button className={screen==="map"?"active":""} onClick={()=>setScreen("map")}>Карта</button><button className={screen==="players"?"active":""} onClick={()=>setScreen("players")}>Люди</button><button className={screen==="table"?"active":""} onClick={()=>setScreen("table")}>Карточный стол</button></nav>
+      {screen==="map"&&<MetroNetworkMap state={state} focusIds={players.map(p=>p.position)} compact={false}/>} 
+      {screen==="players"&&<PublicPlayers state={state}/>} 
+      {screen==="table"&&<SquadCardTable state={state} players={players}/>} 
+    </section>
     <aside className="squad-side"><div className="network-message"><span>Передача ведущей</span><p>{state.gmMessage}</p></div>{players.map((player)=><article className="squad-player pixel-panel" key={player.id}><RolePortrait index={player.id-1}/><small>Игрок {player.id} · {player.bullets} патронов</small><h2>{player.name}</h2><p>{roleCards.find(r=>r.id===player.roleId)?.publicFact}</p><div className={`squad-intent ${player.intent||"empty"}`}><span>{state.phase==="planning"?player.ready?"Решение зафиксировано":"Ожидает решения":player.intent==="stay"?"Остаётся на станции":player.intent==="tunnel"?`Идёт: ${nodeById.get(player.target||"")?.name||"направление скрыто"}`:"Решения нет"}</span></div></article>)}<StationBrief nodeId={current}/></aside>
   </div>;
+}
+
+function PublicPlayers({state}:{state:NetworkSession}){
+  return <section className="public-roster"><div><p className="pixel-kicker">Публичные сведения</p><h2>Кто ещё жив</h2><p>Инвентарь, цель и секрет здесь не показываются.</p></div><div>{state.players.slice(0,state.playerCount).map((player)=><article key={player.id} className={player.lostLimbs.length>=4?"dead":""}><RolePortrait index={player.id-1}/><small>Пара {player.pair}</small><h3>{player.name}</h3><b>{roleCards.find(r=>r.id===player.roleId)?.name}</b><p>{nodeById.get(player.position)?.name}</p><i>{player.lostLimbs.length>=4?"Мёртв":`${4-player.lostLimbs.length}/4 конечности`}</i></article>)}</div></section>;
+}
+
+function SquadCardTable({state,players}:{state:NetworkSession;players:NetworkSession["players"]}){
+  const challenge=challengeCards.find(card=>card.id===state.activeChallenge);
+  return <section className="squad-card-table"><div className={`challenge-card-visual category-${challenge?.category||"empty"}`}><span>{challenge?.category||"Тоннель молчит"}</span><h2>{challenge?.title||"Испытание ещё не открыто"}</h2><p>{challenge?.scene||"Когда ведущая откроет карточку тоннеля, она появится здесь только у активной группы."}</p>{challenge&&<><strong>{challenge.question}</strong><small>Возможное последствие: {challenge.consequence}</small></>}</div><div className="played-cards"><p className="pixel-kicker">Ответ отряда</p><h3>Положите личные карты на стол</h3>{players.map(player=>{const item=itemCards.find(card=>card.id===player.selectedItem);return <article key={player.id} className={item?"placed":"empty"}><span>{player.name}</span><b>{item?.title||"Карта ещё не выбрана"}</b><p>{item?.description||"Игрок выбирает предмет на своём телефоне. Затем вслух объясняет, как применяет его в сцене."}</p></article>})}<div className="gm-ruling-note">Ведущая видит предложенные карты и принимает одно решение: <b>одобрено</b>, <b>одобрено с ценой</b> или <b>последствие</b>.</div></div></section>;
 }
 
 function PlayerPhone({state,playerId,busy,act}:{state:NetworkSession;playerId:number;busy:boolean;act:(a:SessionAction)=>void}){
@@ -162,7 +179,7 @@ function CommonPanel({state}:{state:NetworkSession}){return <div className="comm
 
 function RolePortrait({index}:{index:number}){return <div className="role-portrait" style={{backgroundImage:"url('/npc-atlas-v1.png')",backgroundPosition:`${(index%5)*25}% ${Math.floor(index/5)*25}%`}} aria-hidden="true"/>;}
 
-function StationBrief({nodeId}:{nodeId?:string}){if(!nodeId)return null;const node=nodeById.get(nodeId);const resource=stationResources[nodeId];const lore=stationLore[nodeId];return <article className="station-brief pixel-panel"><span>Текущая станция</span><h3>{node?.name}</h3><b>{resource?.icon} {resource?.label}</b><p>{lore?.after2026||lore?.fact||"Сведения о станции пока не подтверждены."}</p></article>}
+function StationBrief({nodeId}:{nodeId?:string}){if(!nodeId)return null;const node=nodeById.get(nodeId);const resource=stationResources[nodeId];const lore=stationLore[nodeId];const story=stationStories[nodeId];return <article className="station-brief pixel-panel"><span>Текущая станция</span><h3>{node?.name}</h3><b>{resource?.icon} {resource?.label}</b><p>{story?.fact||lore?.after2026||"Сведения о станции пока не подтверждены."}</p></article>}
 
 function MetroNetworkMap({state,focusIds,compact}:{state:NetworkSession;focusIds:string[];compact:boolean}){
   const [zoom,setZoom]=useState(1);const [query,setQuery]=useState("");const [selected,setSelected]=useState<string|null>(focusIds[0]||null);

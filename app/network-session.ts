@@ -29,8 +29,10 @@ export type NetworkSession = {
   activePair: number;
   time: SessionTime;
   phase: SessionPhase;
+  resolvedPairs: number[];
   players: NetworkPlayer[];
   activeChallenge: string | null;
+  crisisStatus: "inactive" | "active" | "resolved";
   gmMessage: string;
   log: SessionLog[];
   updatedAt: number;
@@ -101,14 +103,14 @@ export function createDemoSession(code = "TEST26"): NetworkSession {
   const now = Date.now();
   return {
     code: code.toUpperCase(), revision: 1, status: "lobby", playerCount: 4,
-    round: 1, activePair: 1, time: "Утро", phase: "planning",
+    round: 1, activePair: 1, time: "Утро", phase: "planning", resolvedPairs: [],
     players: roleIds.map((roleId, index) => ({
       id: index + 1, name: `Игрок ${String(index + 1).padStart(2, "0")}`,
       pair: Math.floor(index / 2) + 1, roleId, position: starts[index], bullets: bullets[index],
       lostLimbs: [], inventory: inventories[index], intent: null, target: null,
       ready: false, onlineAt: null, selectedItem: null,
     })),
-    activeChallenge: null,
+    activeChallenge: null, crisisStatus: "inactive",
     gmMessage: "Голоса становятся тише, когда вы движетесь к Полису.",
     log: [logEntry("Тестовая комната создана. Активны две пары и четыре личных экрана.")],
     updatedAt: now,
@@ -121,9 +123,11 @@ export type SessionAction =
   | { type: "toggle-item"; playerId: number; itemId: string }
   | { type: "set-player-name"; playerId: number; name: string }
   | { type: "gm-next-phase" }
+  | { type: "gm-resolve-pair"; pair: number }
   | { type: "gm-set-status"; status: NetworkSession["status"] }
   | { type: "gm-set-message"; message: string }
   | { type: "gm-set-challenge"; challengeId: string | null }
+  | { type: "gm-set-crisis"; status: NetworkSession["crisisStatus"] }
   | { type: "gm-set-active-pair"; pair: number }
   | { type: "gm-set-player-count"; count: 4 | 12 }
   | { type: "gm-adjust-bullets"; playerId: number; delta: number }
@@ -158,6 +162,10 @@ export function applySessionAction(state: NetworkSession, action: SessionAction,
       player.target = action.intent === "tunnel" ? action.target || null : null;
       player.ready = true;
       addLog(`${player.name} зафиксировал личное решение.`);
+      if (next.players.slice(0,next.playerCount).every((entry)=>entry.ready)) {
+        next.phase = "reveal";
+        addLog("Все личные решения получены. Система автоматически открыла фазу раскрытия.");
+      }
       break;
     }
     case "toggle-item": {
@@ -178,6 +186,7 @@ export function applySessionAction(state: NetworkSession, action: SessionAction,
         next.round += 1;
         next.phase = "planning";
         next.activePair = 1;
+        next.resolvedPairs = [];
         next.time = timeCycle[(timeCycle.indexOf(next.time) + 1) % timeCycle.length];
         next.activeChallenge = null;
         next.players = next.players.map((player) => ({ ...player, intent: null, target: null, ready: false, selectedItem: null }));
@@ -188,9 +197,32 @@ export function applySessionAction(state: NetworkSession, action: SessionAction,
       }
       break;
     }
+    case "gm-resolve-pair": {
+      if (next.phase !== "challenge") throw new Error("Завершать ходы пар можно только на фазе испытаний.");
+      const totalPairs=next.playerCount/2;
+      next.resolvedPairs=Array.from(new Set([...next.resolvedPairs,Math.max(1,Math.min(totalPairs,action.pair))]));
+      addLog(`Ход отряда ${action.pair} полностью разрешён.`);
+      if(next.resolvedPairs.length===totalPairs){
+        next.phase="resolution";
+        addLog("Все отряды завершили действия. Раунд автоматически перешёл к итогам.");
+      }else{
+        next.activePair=Array.from({length:totalPairs},(_,index)=>index+1).find((pair)=>!next.resolvedPairs.includes(pair))||1;
+        next.activeChallenge=null;
+      }
+      break;
+    }
     case "gm-set-status": next.status = action.status; addLog(`Статус партии: ${action.status}.`); break;
     case "gm-set-message": next.gmMessage = action.message.slice(0, 220); break;
     case "gm-set-challenge": next.activeChallenge = action.challengeId; addLog(action.challengeId ? "Ведущая открыла испытание." : "Испытание закрыто."); break;
+    case "gm-set-crisis": {
+      next.crisisStatus = action.status;
+      addLog(action.status === "active"
+        ? "КРИЗИС: выработка патронов остановлена, Чёрное Нечто движется вдвое быстрее."
+        : action.status === "resolved"
+          ? "Кризис «Квадрат в кольце» разрешён. Выработка патронов восстановлена."
+          : "Кризис возвращён в ожидание.");
+      break;
+    }
     case "gm-set-active-pair": next.activePair = Math.max(1, Math.min(next.playerCount / 2, action.pair)); break;
     case "gm-set-player-count": next.playerCount = action.count; next.activePair = 1; addLog(action.count === 4 ? "Включён тестовый режим: две пары." : "Включена полная партия: шесть пар."); break;
     case "gm-adjust-bullets": {
@@ -213,15 +245,17 @@ export function applySessionAction(state: NetworkSession, action: SessionAction,
 export function projectSession(state: NetworkSession, viewer: Viewer) {
   if (viewer.kind === "gm") return state;
   const active = state.players.slice(0, state.playerCount);
+  const canSeeChallenge = viewer.kind === "squad" && viewer.pair === state.activePair;
   return {
     ...state,
+    activeChallenge: canSeeChallenge ? state.activeChallenge : null,
     players: active.map((player) => {
       const own = viewer.kind === "player" && viewer.playerId === player.id;
       const pair = viewer.kind === "squad" && viewer.pair === player.pair;
       return {
         ...player,
         inventory: own ? player.inventory : [],
-        selectedItem: own ? player.selectedItem : null,
+        selectedItem: own || pair ? player.selectedItem : null,
         intent: own || pair || state.phase !== "planning" ? player.intent : null,
         target: own || pair || state.phase !== "planning" ? player.target : null,
       };
