@@ -1,0 +1,231 @@
+export type SessionTime = "Утро" | "День" | "Вечер" | "Ночь";
+export type SessionPhase = "planning" | "reveal" | "challenge" | "resolution";
+export type PlayerIntent = "stay" | "tunnel" | null;
+
+export type NetworkPlayer = {
+  id: number;
+  name: string;
+  pair: number;
+  roleId: string;
+  position: string;
+  bullets: number;
+  lostLimbs: string[];
+  inventory: string[];
+  intent: PlayerIntent;
+  target: string | null;
+  ready: boolean;
+  onlineAt: number | null;
+  selectedItem: string | null;
+};
+
+export type SessionLog = { id: string; at: number; text: string };
+
+export type NetworkSession = {
+  code: string;
+  revision: number;
+  status: "lobby" | "playing" | "paused";
+  playerCount: 4 | 12;
+  round: number;
+  activePair: number;
+  time: SessionTime;
+  phase: SessionPhase;
+  players: NetworkPlayer[];
+  activeChallenge: string | null;
+  gmMessage: string;
+  log: SessionLog[];
+  updatedAt: number;
+};
+
+export type Viewer =
+  | { kind: "gm"; label: string }
+  | { kind: "squad"; pair: number; label: string }
+  | { kind: "player"; playerId: number; label: string }
+  | { kind: "common"; label: string };
+
+export const demoCredentials = {
+  gm: { pin: "2600", label: "Пульт ведущей" },
+  common: { pin: "0000", label: "Общий терминал" },
+  squads: [
+    { pair: 1, pin: "1131", label: "Компьютер отряда 1" },
+    { pair: 2, pin: "2242", label: "Компьютер отряда 2" },
+    { pair: 3, pin: "3353", label: "Компьютер отряда 3" },
+    { pair: 4, pin: "4464", label: "Компьютер отряда 4" },
+    { pair: 5, pin: "5575", label: "Компьютер отряда 5" },
+    { pair: 6, pin: "6686", label: "Компьютер отряда 6" },
+  ],
+  players: Array.from({ length: 12 }, (_, index) => ({
+    playerId: index + 1,
+    pin: String(3101 + index),
+    label: `Личный экран ${index + 1}`,
+  })),
+} as const;
+
+export function resolveViewer(pin: string): Viewer | null {
+  if (pin === demoCredentials.gm.pin) return { kind: "gm", label: demoCredentials.gm.label };
+  if (pin === demoCredentials.common.pin) return { kind: "common", label: demoCredentials.common.label };
+  const squad = demoCredentials.squads.find((entry) => entry.pin === pin);
+  if (squad) return { kind: "squad", pair: squad.pair, label: squad.label };
+  const player = demoCredentials.players.find((entry) => entry.pin === pin);
+  if (player) return { kind: "player", playerId: player.playerId, label: player.label };
+  return null;
+}
+
+const roleIds = ["mag", "skeptic", "mother", "teen", "scientist", "medic", "trackman", "cartographer", "signalman", "shuttle", "veteran", "smuggler"];
+const starts = [
+  "10::окружная",
+  "10::окружная",
+  "2::водный стадион",
+  "2::водный стадион",
+  "6::калужская",
+  "6::калужская",
+  "7::спартак",
+  "7::спартак",
+  "8A::мичуринский проспект",
+  "8A::мичуринский проспект",
+  "11::печатники",
+  "11::печатники",
+];
+const bullets = [5, 7, 7, 5, 5, 7, 7, 5, 7, 10, 5, 5];
+const inventories = [
+  ["wire", "mirror"], ["chalk", "flashlight"], ["cloth", "hot_meal"], ["headphones", "chalk"],
+  ["tube", "filter"], ["medkit", "tourniquet"], ["wrench", "wire"], ["chalk", "rope"],
+  ["radio", "wire"], ["cloth", "battery"], ["crowbar", "flare"], ["pass", "painkillers"],
+];
+
+function logEntry(text: string): SessionLog {
+  const at = Date.now();
+  return { id: `${at}-${Math.random().toString(36).slice(2, 8)}`, at, text };
+}
+
+export function createDemoSession(code = "TEST26"): NetworkSession {
+  const now = Date.now();
+  return {
+    code: code.toUpperCase(), revision: 1, status: "lobby", playerCount: 4,
+    round: 1, activePair: 1, time: "Утро", phase: "planning",
+    players: roleIds.map((roleId, index) => ({
+      id: index + 1, name: `Игрок ${String(index + 1).padStart(2, "0")}`,
+      pair: Math.floor(index / 2) + 1, roleId, position: starts[index], bullets: bullets[index],
+      lostLimbs: [], inventory: inventories[index], intent: null, target: null,
+      ready: false, onlineAt: null, selectedItem: null,
+    })),
+    activeChallenge: null,
+    gmMessage: "Голоса становятся тише, когда вы движетесь к Полису.",
+    log: [logEntry("Тестовая комната создана. Активны две пары и четыре личных экрана.")],
+    updatedAt: now,
+  };
+}
+
+export type SessionAction =
+  | { type: "heartbeat"; playerId?: number }
+  | { type: "set-intent"; playerId: number; intent: Exclude<PlayerIntent, null>; target?: string | null }
+  | { type: "toggle-item"; playerId: number; itemId: string }
+  | { type: "set-player-name"; playerId: number; name: string }
+  | { type: "gm-next-phase" }
+  | { type: "gm-set-status"; status: NetworkSession["status"] }
+  | { type: "gm-set-message"; message: string }
+  | { type: "gm-set-challenge"; challengeId: string | null }
+  | { type: "gm-set-active-pair"; pair: number }
+  | { type: "gm-set-player-count"; count: 4 | 12 }
+  | { type: "gm-adjust-bullets"; playerId: number; delta: number }
+  | { type: "gm-limb"; playerId: number; limb: string }
+  | { type: "gm-reset" };
+
+const timeCycle: SessionTime[] = ["Утро", "День", "Вечер", "Ночь"];
+const phaseCycle: SessionPhase[] = ["planning", "reveal", "challenge", "resolution"];
+
+export function applySessionAction(state: NetworkSession, action: SessionAction, viewer: Viewer): NetworkSession {
+  if (action.type.startsWith("gm-") && viewer.kind !== "gm") throw new Error("Недостаточно прав для действия ведущей.");
+  const activeIds = new Set(state.players.slice(0, state.playerCount).map((player) => player.id));
+  const canUsePlayer = (playerId: number) => {
+    if (!activeIds.has(playerId)) return false;
+    if (viewer.kind === "gm") return true;
+    if (viewer.kind === "player") return viewer.playerId === playerId;
+    if (viewer.kind === "squad") return state.players[playerId - 1]?.pair === viewer.pair;
+    return false;
+  };
+  let next: NetworkSession = { ...state, players: state.players.map((player) => ({ ...player })), updatedAt: Date.now() };
+  const addLog = (text: string) => { next = { ...next, log: [logEntry(text), ...next.log].slice(0, 120) }; };
+
+  switch (action.type) {
+    case "heartbeat": {
+      if (action.playerId && canUsePlayer(action.playerId)) next.players[action.playerId - 1].onlineAt = Date.now();
+      break;
+    }
+    case "set-intent": {
+      if (!canUsePlayer(action.playerId) || next.phase !== "planning") throw new Error("Сейчас это решение изменить нельзя.");
+      const player = next.players[action.playerId - 1];
+      player.intent = action.intent;
+      player.target = action.intent === "tunnel" ? action.target || null : null;
+      player.ready = true;
+      addLog(`${player.name} зафиксировал личное решение.`);
+      break;
+    }
+    case "toggle-item": {
+      if (!canUsePlayer(action.playerId)) throw new Error("Эта карточка вам не принадлежит.");
+      const player = next.players[action.playerId - 1];
+      if (!player.inventory.includes(action.itemId)) throw new Error("Карточка отсутствует в инвентаре.");
+      player.selectedItem = player.selectedItem === action.itemId ? null : action.itemId;
+      break;
+    }
+    case "set-player-name": {
+      if (!canUsePlayer(action.playerId)) throw new Error("Нельзя изменить это имя.");
+      next.players[action.playerId - 1].name = action.name.trim().slice(0, 28) || next.players[action.playerId - 1].name;
+      break;
+    }
+    case "gm-next-phase": {
+      const phaseIndex = phaseCycle.indexOf(next.phase);
+      if (next.phase === "resolution") {
+        next.round += 1;
+        next.phase = "planning";
+        next.activePair = 1;
+        next.time = timeCycle[(timeCycle.indexOf(next.time) + 1) % timeCycle.length];
+        next.activeChallenge = null;
+        next.players = next.players.map((player) => ({ ...player, intent: null, target: null, ready: false, selectedItem: null }));
+        addLog(`Начался раунд ${next.round}. Общее время: ${next.time}.`);
+      } else {
+        next.phase = phaseCycle[phaseIndex + 1];
+        addLog(`Фаза изменена: ${next.phase}.`);
+      }
+      break;
+    }
+    case "gm-set-status": next.status = action.status; addLog(`Статус партии: ${action.status}.`); break;
+    case "gm-set-message": next.gmMessage = action.message.slice(0, 220); break;
+    case "gm-set-challenge": next.activeChallenge = action.challengeId; addLog(action.challengeId ? "Ведущая открыла испытание." : "Испытание закрыто."); break;
+    case "gm-set-active-pair": next.activePair = Math.max(1, Math.min(next.playerCount / 2, action.pair)); break;
+    case "gm-set-player-count": next.playerCount = action.count; next.activePair = 1; addLog(action.count === 4 ? "Включён тестовый режим: две пары." : "Включена полная партия: шесть пар."); break;
+    case "gm-adjust-bullets": {
+      const player = next.players[action.playerId - 1];
+      player.bullets = Math.max(0, player.bullets + action.delta);
+      addLog(`${player.name}: ${action.delta > 0 ? "+" : ""}${action.delta} патронов.`);
+      break;
+    }
+    case "gm-limb": {
+      const player = next.players[action.playerId - 1];
+      player.lostLimbs = player.lostLimbs.includes(action.limb) ? player.lostLimbs.filter((limb) => limb !== action.limb) : [...player.lostLimbs, action.limb];
+      addLog(`${player.name}: состояние конечностей изменено.`);
+      break;
+    }
+    case "gm-reset": return createDemoSession(state.code);
+  }
+  return next;
+}
+
+export function projectSession(state: NetworkSession, viewer: Viewer) {
+  if (viewer.kind === "gm") return state;
+  const active = state.players.slice(0, state.playerCount);
+  return {
+    ...state,
+    players: active.map((player) => {
+      const own = viewer.kind === "player" && viewer.playerId === player.id;
+      const pair = viewer.kind === "squad" && viewer.pair === player.pair;
+      return {
+        ...player,
+        inventory: own ? player.inventory : [],
+        selectedItem: own ? player.selectedItem : null,
+        intent: own || pair || state.phase !== "planning" ? player.intent : null,
+        target: own || pair || state.phase !== "planning" ? player.target : null,
+      };
+    }),
+    log: viewer.kind === "common" ? state.log.slice(0, 8) : state.log.slice(0, 20),
+  };
+}

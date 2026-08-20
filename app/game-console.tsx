@@ -256,7 +256,7 @@ export function GameConsole() {
         <TabButton active={tab === "crisis"} onClick={() => setTab("crisis")} icon="⚠">Кризисы</TabButton>
         <TabButton active={tab === "death"} onClick={() => setTab("death")} icon="◇">После смерти</TabButton>
         <TabButton active={tab === "log"} onClick={() => setTab("log")} icon="≡">Журнал <b>{game.log.length}</b></TabButton>
-        <div className="status"><span className="pulse" /> партия сохранена на устройстве</div>
+        <div className="status"><a className="network-launch" href="/play">Сетевая игра</a><span className="pulse" /> локальный пульт</div>
       </nav>
 
       <div className={`time-rule-strip ${game.time === "Ночь" ? "night" : ""}`}><b>{game.time}</b><span>{timeRules[game.time].boon}</span><i>{timeRules[game.time].pressure}</i></div>
