@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import { SoloConsole } from "../solo-console";
 
 export const metadata: Metadata = {
-  title: "Одиночная партия — Голоса под Москвой",
-  description: "Один живой персонаж и одиннадцать автономных путников-ботов на общей карте метро.",
+  title: "Экспедиция — Голоса под Москвой",
+  description: "Путешествие через постапокалиптическое московское метро к Полису.",
 };
 
 export default function SoloPage() { return <SoloConsole/>; }
