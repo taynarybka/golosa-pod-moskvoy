@@ -118,3 +118,15 @@ body{font-size:16px;line-height:1.45}button,input,select,textarea{font-size:14px
 .solo-title{color:#f0f3ef;font-weight:900;text-transform:uppercase}
 .solo-header>aside{display:flex;justify-self:end;gap:7px}
 @media(max-width:560px){.setup-sound{right:18px;top:18px}.solo-title{font-size:11px}.solo-header>aside>button{padding:7px 6px;font-size:7px}}
+.network-map svg{cursor:grab;touch-action:none;user-select:none}
+.network-map.dragging svg{cursor:grabbing}
+.network-map-hint{position:absolute;z-index:3;top:15px;left:50%;transform:translateX(-50%);padding:6px 9px;border:1px solid #344139;background:rgba(8,15,11,.9);color:#849188;font:800 10px ui-monospace,monospace;text-transform:uppercase;letter-spacing:.04em;pointer-events:none}
+.network-track-hit{stroke:transparent;stroke-width:9;vector-effect:non-scaling-stroke;pointer-events:stroke;cursor:pointer}
+.network-track,.network-transfer{pointer-events:none}
+.net-track-group.selected .network-track,.net-track-group.selected .network-transfer{filter:drop-shadow(0 0 4px #e5f77b);opacity:1!important}
+.net-station-hit{fill:transparent;stroke:none;pointer-events:all}
+.net-station:focus{outline:none}.net-station:focus .net-station-hit,.net-station.selected .net-station-hit{fill:rgba(215,239,83,.14);stroke:#d7ef53;stroke-width:1.2}
+.track-fact{width:285px}.track-fact small{display:block;margin-top:7px;color:#758179;line-height:1.35}
+.map-mystery{display:block;margin:9px 0 8px;color:#d9cfb0;font-size:13px;font-style:normal;line-height:1.45}
+.net-caravan{cursor:pointer;outline:none}.net-caravan-icon{font-size:17px;text-anchor:middle;dominant-baseline:central;filter:drop-shadow(0 1px 2px #030603);transition:font-size .15s ease}.net-caravan:hover .net-caravan-icon,.net-caravan:focus .net-caravan-icon{font-size:21px}
+@media(max-width:760px){.network-map-hint{top:auto;bottom:12px;left:auto;right:12px;transform:none;max-width:190px}.map-fact{bottom:58px}}

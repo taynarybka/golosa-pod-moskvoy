@@ -153,19 +153,21 @@ function finishTurn(save:SoloSave,outcome:TurnOutcome):SoloSave{
 
 export function SoloConsole(){
   const [save,setSave]=useState<SoloSave|null>(null);const [selectedRole,setSelectedRole]=useState(roleCards[0].id);
-  const [musicOn,setMusicOn]=useState(false);const audioRef=useRef<AudioContext|null>(null);
+  const [musicOn,setMusicOn]=useState(false);const audioRef=useRef<AudioContext|null>(null);const musicTimerRef=useRef<number|null>(null);
   useEffect(()=>{const raw=localStorage.getItem(soloStorageKey);if(raw){try{const parsed=JSON.parse(raw) as SoloSave;const position=parsed.session.players[parsed.humanId-1]?.position||"";setSave({...parsed,session:{...parsed.session,crisisStatus:"inactive"},pendingTarget:parsed.pendingTarget||null,pendingEdgeId:parsed.pendingEdgeId||null,soloGoalId:parsed.soloGoalId||randomSoloGoal(),stats:{...emptySoloStats(position),...(parsed.stats||{}),visited:parsed.stats?.visited||[position]}});}catch{/* Повреждённое локальное сохранение игнорируется. */}}},[]);
   useEffect(()=>{if(save)localStorage.setItem(soloStorageKey,JSON.stringify(save));},[save]);
-  useEffect(()=>()=>{void audioRef.current?.close();},[]);
+  useEffect(()=>()=>{if(musicTimerRef.current!=null)window.clearInterval(musicTimerRef.current);void audioRef.current?.close();},[]);
   const toggleMusic=async()=>{
-    if(audioRef.current){await audioRef.current.close();audioRef.current=null;setMusicOn(false);return;}
-    const AudioContextClass=window.AudioContext;const context=new AudioContextClass();const master=context.createGain();master.gain.value=.075;master.connect(context.destination);
-    const low=context.createBiquadFilter();low.type="lowpass";low.frequency.value=150;low.Q.value=2.4;low.connect(master);
-    [43,58].forEach((frequency,index)=>{const oscillator=context.createOscillator();const gain=context.createGain();oscillator.type=index?"triangle":"sine";oscillator.frequency.value=frequency;gain.gain.value=index?.13:.2;oscillator.connect(gain).connect(low);oscillator.start();});
-    const noise=context.createBuffer(1,context.sampleRate*4,context.sampleRate);const channel=noise.getChannelData(0);for(let index=0;index<channel.length;index++)channel[index]=(Math.random()*2-1)*(.16+.08*Math.sin(index/context.sampleRate*Math.PI));
-    const source=context.createBufferSource();const tunnel=context.createBiquadFilter();const noiseGain=context.createGain();source.buffer=noise;source.loop=true;tunnel.type="bandpass";tunnel.frequency.value=420;tunnel.Q.value=.7;noiseGain.gain.value=.11;source.connect(tunnel).connect(noiseGain).connect(master);source.start();
-    const pulse=context.createOscillator();const pulseGain=context.createGain();pulse.frequency.value=.085;pulseGain.gain.value=.025;pulse.connect(pulseGain).connect(master.gain);pulse.start();
-    audioRef.current=context;await context.resume();setMusicOn(true);
+    if(audioRef.current){if(musicTimerRef.current!=null)window.clearInterval(musicTimerRef.current);musicTimerRef.current=null;await audioRef.current.close();audioRef.current=null;setMusicOn(false);return;}
+    const AudioContextClass=window.AudioContext;const context=new AudioContextClass();const master=context.createGain();const compressor=context.createDynamicsCompressor();master.gain.value=.16;master.connect(compressor).connect(context.destination);compressor.threshold.value=-18;compressor.ratio.value=5;
+    const delay=context.createDelay(1);const echo=context.createGain();delay.delayTime.value=.31;echo.gain.value=.22;delay.connect(echo).connect(delay);delay.connect(master);
+    const noise=context.createBuffer(1,context.sampleRate*3,context.sampleRate);const channel=noise.getChannelData(0);for(let index=0;index<channel.length;index++)channel[index]=(Math.random()*2-1)*.32;
+    const tunnelSource=context.createBufferSource();const tunnelFilter=context.createBiquadFilter();const tunnelGain=context.createGain();tunnelSource.buffer=noise;tunnelSource.loop=true;tunnelFilter.type="bandpass";tunnelFilter.frequency.value=540;tunnelFilter.Q.value=.55;tunnelGain.gain.value=.018;tunnelSource.connect(tunnelFilter).connect(tunnelGain).connect(master);tunnelSource.start();
+    const beat=60/82;const cycleLength=beat*8;let cycle=0;
+    const tone=(frequency:number,at:number,duration:number,volume:number,type:OscillatorType,destination:AudioNode=master)=>{const oscillator=context.createOscillator();const gain=context.createGain();const filter=context.createBiquadFilter();oscillator.type=type;oscillator.frequency.setValueAtTime(frequency,at);filter.type="lowpass";filter.frequency.setValueAtTime(type==="sawtooth"?460:1350,at);gain.gain.setValueAtTime(.0001,at);gain.gain.exponentialRampToValueAtTime(volume,at+.035);gain.gain.exponentialRampToValueAtTime(.0001,at+duration);oscillator.connect(filter).connect(gain).connect(destination);oscillator.start(at);oscillator.stop(at+duration+.05);};
+    const heartbeat=(at:number)=>{const oscillator=context.createOscillator();const gain=context.createGain();oscillator.type="sine";oscillator.frequency.setValueAtTime(92,at);oscillator.frequency.exponentialRampToValueAtTime(42,at+.2);gain.gain.setValueAtTime(.12,at);gain.gain.exponentialRampToValueAtTime(.0001,at+.24);oscillator.connect(gain).connect(master);oscillator.start(at);oscillator.stop(at+.26);};
+    const scheduleCycle=()=>{const start=context.currentTime+.08;const bass=cycle%2?[55,55,61.74,55,51.91,55,46.25,51.91]:[55,55,58.27,55,46.25,51.91,49,46.25];const lead=cycle%2?[220,233.08,174.61]:[207.65,220,164.81];bass.forEach((note,index)=>tone(note,start+index*beat,beat*.82,.11,"sawtooth"));[1,4,6].forEach((step,index)=>{tone(lead[index],start+step*beat,beat*1.45,.035,"triangle",delay);tone(lead[index]/2,start+step*beat,beat*1.3,.018,"sine");});heartbeat(start);heartbeat(start+.18);heartbeat(start+beat*4);heartbeat(start+beat*4+.18);cycle+=1;};
+    scheduleCycle();musicTimerRef.current=window.setInterval(scheduleCycle,cycleLength*1000);audioRef.current=context;await context.resume();setMusicOn(true);
   };
   const human=save?.session.players[save.humanId-1];const role=human?roleCards.find(entry=>entry.id===human.roleId):undefined;
   const availableNeighbors=human&&save?neighbors(human.position,save.session):[];
