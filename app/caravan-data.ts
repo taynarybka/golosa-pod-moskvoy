@@ -27,7 +27,8 @@ export function activeCaravansForRound(round:number):ActiveCaravan[]{
   const step=Math.floor(Math.max(0,round-1)/2);const resting=round%2===0;
   return routes.flatMap((route)=>{
     const ring=route.id==="5"||route.id==="11";
-    const directions:("forward"|"backward")[]=ring?[route.id==="11"?"backward":"forward"]:["forward","backward"];
+    const shortBranch=route.stations.length<=14;
+    const directions:("forward"|"backward")[]=ring?[route.id==="11"?"backward":"forward"]:shortBranch?["forward"]:["forward","backward"];
     return directions.map((direction)=>{
       const length=route.stations.length;
       const position=ring
@@ -39,7 +40,7 @@ export function activeCaravansForRound(round:number):ActiveCaravan[]{
         :(direction==="forward"?pingPong(nextStep,length):length-1-pingPong(nextStep,length));
       return {
         id:`caravan-${route.id}-${direction}`,
-        name:ring?`Кольцевая почта · ${route.name}`:`${direction==="forward"?"Прямой":"Обратный"} караван · ${route.name}`,
+        name:ring?`Кольцевая почта · ${route.name}`:shortBranch?`Челночный караван · ${route.name}`:`${direction==="forward"?"Прямой":"Обратный"} караван · ${route.name}`,
         lineId:route.id,
         lineName:route.name,
         color:route.color,

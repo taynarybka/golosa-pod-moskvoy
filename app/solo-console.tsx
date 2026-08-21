@@ -26,15 +26,17 @@ type SoloSave = {
   pendingEdgeId: string | null;
   soloGoalId: string;
   stats: SoloStats;
+  finishRank: number | null;
 };
 type MetroEdge = { id:string; source:string; target:string; type:string };
 type TurnOutcome = { move:boolean; injury?:boolean; note?:string; rewardItem?:string; rewardBullets?:number; challenge?:boolean; itemSolution?:boolean; quiet?:boolean; cordon?:boolean; bulletsSpent?:number };
 type SoloGoal = { id:string; title:string; text:string; target:number; progress:(save:SoloSave)=>number; unit:string };
 
 const edges = metroData.edges as readonly MetroEdge[];
-const nodes = metroData.nodes as readonly {id:string;name:string;lineName:string}[];
+const nodes = metroData.nodes as readonly {id:string;name:string;lineName:string;color:string}[];
 const byId = new Map(nodes.map((node)=>[node.id,node]));
 const targetId = "1::библиотека им.ленина";
+const polisIds = new Set([targetId,"3::арбатская","4::александровский сад","9::боровицкая"]);
 const soloStorageKey = "metro-expedition-v1";
 const timeCycle:SessionTime[]=["Утро","День","Вечер","Ночь"];
 const limbCycle=["leftArm","rightArm","leftLeg","rightLeg"];
@@ -75,10 +77,10 @@ function neighbors(position:string,session:NetworkSession,includeClosed=false){
     return [{edge,target,status}];
   });
 }
-function distance(start:string,session:NetworkSession,target=targetId){
-  if(start===target)return 0;
+function distance(start:string,session:NetworkSession){
+  if(polisIds.has(start))return 0;
   const queue:[[string,number]]=[[start,0]];const seen=new Set([start]);
-  while(queue.length){const [current,depth]=queue.shift()!;for(const next of neighbors(current,session)){if(seen.has(next.target))continue;if(next.target===target)return depth+1;seen.add(next.target);queue.push([next.target,depth+1]);}}
+  while(queue.length){const [current,depth]=queue.shift()!;for(const next of neighbors(current,session)){if(seen.has(next.target))continue;if(polisIds.has(next.target))return depth+1;seen.add(next.target);queue.push([next.target,depth+1]);}}
   return 999;
 }
 function bestStep(position:string,session:NetworkSession,seed:number){
@@ -95,14 +97,15 @@ function freshSave(humanId:number):SoloSave{
   session.crisisStatus="inactive";
   session.players=session.players.map((player,index)=>({...player,bullets:player.bullets*3,name:index+1===humanId?"Вы":botNames[index],onlineAt:index+1===humanId?Date.now():null}));
   session.log=[{id:"expedition-start",at:Date.now(),text:"Экспедиция началась. Двенадцать голосов движутся к Полису."}];
-  return {session,phase:"planning",humanId,report:["Личная цель открыта. Путь к Полису начался."],steps:0,pendingTarget:null,pendingEdgeId:null,soloGoalId:randomSoloGoal(),stats:emptySoloStats(session.players[humanId-1].position)};
+  return {session,phase:"planning",humanId,report:["Личная цель открыта. Путь к Полису начался."],steps:0,pendingTarget:null,pendingEdgeId:null,soloGoalId:randomSoloGoal(),stats:emptySoloStats(session.players[humanId-1].position),finishRank:null};
 }
 function botIntent(player:NetworkPlayer,session:NetworkSession):{intent:Exclude<PlayerIntent,null>;target:string|null}{
   const resource=stationResources[player.position];
-  if(player.position===targetId)return {intent:"stay",target:null};
-  if(player.lostLimbs.length>1&&resource?.kind==="medkit")return {intent:"stay",target:null};
+  if(polisIds.has(player.position))return {intent:"stay",target:null};
+  if(player.lostLimbs.length>0&&resource?.kind==="medkit")return {intent:"stay",target:null};
   if(player.bullets<3&&resource?.kind==="rice")return {intent:"stay",target:null};
-  if((session.round+player.id)%6===0)return {intent:"stay",target:null};
+  if((session.round*3+player.id*2)%10<4)return {intent:"stay",target:null};
+  if(player.lostLimbs.length>0&&(session.round+player.id)%2===0)return {intent:"stay",target:null};
   const target=bestStep(player.position,session,session.round+player.id);
   return target?{intent:"tunnel",target}:{intent:"stay",target:null};
 }
@@ -118,6 +121,7 @@ function addResource(player:NetworkPlayer,session:NetworkSession,report:string[]
 function finishTurn(save:SoloSave,outcome:TurnOutcome):SoloSave{
   const session={...save.session,world:{...save.session.world,edges:{...save.session.world.edges}},players:save.session.players.map(player=>({...player,inventory:[...player.inventory],lostLimbs:[...player.lostLimbs]}))};
   const human=session.players[save.humanId-1];const report:string[]=[];
+  const botsAlreadyAtPolis=session.players.filter(player=>player.id!==save.humanId&&polisIds.has(player.position)).length;
   const stats:SoloStats={...save.stats,visited:[...save.stats.visited]};
   session.players.forEach((player)=>{
     if(player.intent==="tunnel"&&player.target){
@@ -127,10 +131,16 @@ function finishTurn(save:SoloSave,outcome:TurnOutcome):SoloSave{
           if(!stats.visited.includes(player.position))stats.visited.push(player.position);
         }else report.push("Вы вернулись на исходную станцию и ничего на ней не добывали.");
       }else{
-        player.position=player.target;
-        if((session.round+player.id)%11===0){const limb=limbCycle[(session.round+player.id)%4];if(!player.lostLimbs.includes(limb))player.lostLimbs.push(limb);report.push(`${player.name} ранен по пути: ${limbNames[limb]}.`);}
+        const interrupted=(session.round*3+player.id)%11===0;
+        if(interrupted){const limb=limbCycle[(session.round+player.id)%4];if(!player.lostLimbs.includes(limb))player.lostLimbs.push(limb);report.push(`${player.name} ранен и не смог пройти тоннель: ${limbNames[limb]}.`);}
+        else player.position=player.target;
       }
-    }else if(player.intent==="stay"){addResource(player,session,report,player.id===save.humanId);if(player.id===save.humanId)stats.stays+=1;}
+    }else if(player.intent==="stay"){
+      if(player.id!==save.humanId&&player.lostLimbs.length>0&&stationResources[player.position]?.kind==="medkit"){
+        const healed=player.lostLimbs.shift();if(healed)report.push(`${player.name} задержался в лазарете и восстановил ${limbNames[healed]}.`);
+      }else addResource(player,session,report,player.id===save.humanId);
+      if(player.id===save.humanId)stats.stays+=1;
+    }
   });
   if(outcome.challenge)stats.challenges+=1;
   if(outcome.itemSolution)stats.itemSolutions+=1;
@@ -143,18 +153,18 @@ function finishTurn(save:SoloSave,outcome:TurnOutcome):SoloSave{
   if(outcome.rewardItem){human.inventory.push(outcome.rewardItem);report.push(`Награда: ${itemNames[outcome.rewardItem]||outcome.rewardItem}.`);}
   if(outcome.rewardBullets){human.bullets+=outcome.rewardBullets;report.push(`Награда: +${outcome.rewardBullets} патрона.`);}
   if(outcome.note)report.unshift(outcome.note);
-  const travelersAtPolis=session.players.filter(player=>player.id!==save.humanId&&player.position===targetId).length;
+  const travelersAtPolis=session.players.filter(player=>player.id!==save.humanId&&polisIds.has(player.position)).length;
   if(travelersAtPolis)report.push(`В Полисе уже ${travelersAtPolis} ${travelersAtPolis===1?"путник":"путников"}.`);
   session.round+=1;session.time=timeCycle[(timeCycle.indexOf(session.time)+1)%4];session.phase="planning";session.activeChallenge=null;
   session.players=session.players.map(player=>({...player,intent:null,target:null,ready:false,selectedItem:null}));
-  const dead=human.lostLimbs.length>=4;const won=human.position===targetId;
-  return {...save,session,stats,phase:dead?"dead":won?"won":"summary",report:report.slice(0,9),steps:save.steps+(outcome.move&&human.intent==="tunnel"?1:0),pendingTarget:null,pendingEdgeId:null};
+  const dead=human.lostLimbs.length>=4;const won=polisIds.has(human.position)&&!dead;const finishRank=won?(save.finishRank||botsAlreadyAtPolis+1):save.finishRank;
+  return {...save,session,stats,phase:dead?"dead":won?"won":"summary",report:report.slice(0,9),steps:save.steps+(outcome.move&&human.intent==="tunnel"?1:0),pendingTarget:null,pendingEdgeId:null,finishRank};
 }
 
 export function SoloConsole(){
   const [save,setSave]=useState<SoloSave|null>(null);const [selectedRole,setSelectedRole]=useState(roleCards[0].id);
   const [musicOn,setMusicOn]=useState(false);const audioRef=useRef<AudioContext|null>(null);const musicTimerRef=useRef<number|null>(null);
-  useEffect(()=>{const raw=localStorage.getItem(soloStorageKey);if(raw){try{const parsed=JSON.parse(raw) as SoloSave;const position=parsed.session.players[parsed.humanId-1]?.position||"";setSave({...parsed,session:{...parsed.session,crisisStatus:"inactive"},pendingTarget:parsed.pendingTarget||null,pendingEdgeId:parsed.pendingEdgeId||null,soloGoalId:parsed.soloGoalId||randomSoloGoal(),stats:{...emptySoloStats(position),...(parsed.stats||{}),visited:parsed.stats?.visited||[position]}});}catch{/* Повреждённое локальное сохранение игнорируется. */}}},[]);
+  useEffect(()=>{const raw=localStorage.getItem(soloStorageKey);if(raw){try{const parsed=JSON.parse(raw) as SoloSave;const position=parsed.session.players[parsed.humanId-1]?.position||"";setSave({...parsed,session:{...parsed.session,crisisStatus:"inactive"},pendingTarget:parsed.pendingTarget||null,pendingEdgeId:parsed.pendingEdgeId||null,soloGoalId:parsed.soloGoalId||randomSoloGoal(),stats:{...emptySoloStats(position),...(parsed.stats||{}),visited:parsed.stats?.visited||[position]},finishRank:parsed.finishRank||null});}catch{/* Повреждённое локальное сохранение игнорируется. */}}},[]);
   useEffect(()=>{if(save)localStorage.setItem(soloStorageKey,JSON.stringify(save));},[save]);
   useEffect(()=>()=>{if(musicTimerRef.current!=null)window.clearInterval(musicTimerRef.current);void audioRef.current?.close();},[]);
   const toggleMusic=async()=>{
@@ -203,8 +213,10 @@ export function SoloConsole(){
     const itemNote=itemId?` Использовано: ${itemNames[itemId]||itemId}${expendableItems.has(itemId)?" (потрачено)":""}.`:"";
     if(option.outcome==="retreat")return finishTurn({...current,session},{move:false,note:`${option.label}.${itemNote}`});
     if(option.outcome==="risk"){
-      const succeeded=Math.random()<.62;return finishTurn({...current,session},{move:succeeded,injury:!succeeded,challenge:succeeded,bulletsSpent:option.bulletCost||0,note:succeeded?`${option.label}: риск оправдался.`:`${option.label}: попытка сорвалась.${itemNote}`});
+      const succeeded=Math.random()<.52;return finishTurn({...current,session},{move:succeeded,injury:!succeeded,challenge:succeeded,bulletsSpent:option.bulletCost||0,note:succeeded?`${option.label}: риск оправдался.`:`${option.label}: попытка сорвалась.${itemNote}`});
     }
+    const failureChance=itemId ? .18 : option.bulletCost ? .12 : .30;
+    if(Math.random()<failureChance)return finishTurn({...current,session},{move:false,injury:true,bulletsSpent:option.bulletCost||0,note:`${option.label}: решение казалось верным, но тоннель повёл себя иначе.${itemNote}`});
     const rewardItem=option.rewardItem||(option.outcome==="reward"?commonRewards[(current.session.round+current.humanId)%commonRewards.length]:undefined);
     return finishTurn({...current,session},{move:true,rewardItem,rewardBullets:option.rewardBullets,challenge:true,itemSolution:Boolean(itemId),bulletsSpent:option.bulletCost||0,note:`${option.label}: решение сработало.${itemNote}`});
   });
@@ -224,22 +236,31 @@ export function SoloConsole(){
 
   if(!save)return <main className="solo-setup"><button className="ambient-toggle setup-sound" onClick={toggleMusic}>{musicOn?"Звук: вкл":"Звук: выкл"}</button><section><p className="pixel-kicker">Москва · 2030</p><h1>Голоса ведут к Полису.<br/><span>Путь начинается здесь.</span></h1><p>Выберите персонажа и начните путь по московскому метро. У каждого путешественника — своя история и личная цель.</p><label>Выберите роль<select value={selectedRole} onChange={event=>setSelectedRole(event.target.value)}>{roleCards.map(entry=><option value={entry.id} key={entry.id}>{entry.name} · {entry.pairName}</option>)}</select></label><button className="pixel-primary" onClick={begin}>Начать экспедицию <span>→</span></button></section><div className="solo-role-preview"><RolePortrait roleId={selectedRole}/><h2>{roleCards.find(entry=>entry.id===selectedRole)?.name}</h2><p>{roleCards.find(entry=>entry.id===selectedRole)?.history}</p><b>Личная цель будет выдана после начала экспедиции.</b></div></main>;
   if(!human||!role)return null;
-  const options=currentChallenge?(challengeSolutions[currentChallenge.id]||[]).filter(option=>!option.roleIds?.length):[];
+  const rawOptions=currentChallenge?(challengeSolutions[currentChallenge.id]||[]).filter(option=>!option.roleIds?.length):[];
+  const optionOffset=rawOptions.length&&currentChallenge?(save.session.round+currentChallenge.id.length)%rawOptions.length:0;
+  const options=[...rawOptions.slice(optionOffset),...rawOptions.slice(0,optionOffset)];
   const inspectionCost=Math.min(4,human.inventory.reduce((sum,item)=>sum+(itemInspectionRisk[item]||0),0));
   const cordonToll=currentCordon?currentCordon.price+(save.session.time==="Вечер"?1:0):0;
   const soloGoal=soloGoals.find(goal=>goal.id===save.soloGoalId)||soloGoals[0];
   const soloGoalProgress=soloGoal.progress(save);
   const soloGoalDone=save.phase==="won"&&soloGoalProgress>=soloGoal.target;
+  const ending=save.phase==="dead"
+    ?{kind:"lost",kicker:"Поражение",title:"До Полиса вы не дошли",text:"Метро запомнило ваш путь, но живым он не завершился."}
+    :save.finishRank===1
+      ?{kind:"super",kicker:"Суперпобеда",title:"Вы пришли первыми",text:"Ни один из одиннадцати путников не успел добраться до Полиса раньше вас."}
+      :save.finishRank!=null&&save.finishRank<=6
+        ?{kind:"victory",kicker:"Победа",title:"Вы в первой шестёрке",text:"Вы успели войти в число первых шести путников, достигших Полиса."}
+        :{kind:"arrived",kicker:"Экспедиция завершена",title:"Вы всё-таки дошли",text:"Первая шестёрка уже собралась, но Полис открыл двери и для вас."};
   return <main className="solo-shell"><header className="solo-header"><span className="solo-title">Голоса под Москвой</span><div><span>{save.session.time}</span><b>Раунд {String(save.session.round).padStart(2,"0")}</b><em>{save.phase==="planning"?"Ваш ход":save.phase==="challenge"?"Испытание":save.phase==="cordon"?"Кордон":save.phase==="summary"?"Итоги":save.phase==="won"?"Полис":"Погиб"}</em></div><aside><button className="ambient-toggle" onClick={toggleMusic}>{musicOn?"Звук: вкл":"Звук: выкл"}</button><button onClick={()=>{if(confirm("Удалить сохранение экспедиции?")){localStorage.removeItem(soloStorageKey);setSave(null);}}}>Новая партия</button></aside></header>
     <div className="solo-layout"><section className="solo-map"><MetroNetworkMap state={save.session} focusIds={[human.position]} compact={false}/></section><aside className="solo-command">
       <article className="solo-human pixel-panel"><RolePortrait roleId={human.roleId}/><small>Ваш персонаж · {human.bullets} ◉ · пройдено {save.steps}</small><h2>{role.name}</h2><div><b>{byId.get(human.position)?.name}</b><span>{4-human.lostLimbs.length}/4 конечности</span></div></article>
       <section className={`solo-goal pixel-panel ${soloGoalDone?"complete":""}`}><p className="pixel-kicker">Личная цель</p><h3>{soloGoal.title}</h3><p>{soloGoal.text}</p><div><span>{soloGoalProgress} / {soloGoal.target} {soloGoal.unit}</span><b>{soloGoalDone?"Выполнено":soloGoalProgress>=soloGoal.target?"Условие собрано":"В процессе"}</b></div></section>
       {save.phase==="planning"&&human.lostLimbs.length>0&&<section className="solo-heal pixel-panel"><p className="pixel-kicker">Лечение без расхода хода</p><span>Аптечек: {human.inventory.filter(item=>item==="medkit").length}</span><div>{human.lostLimbs.map(limb=><button disabled={!human.inventory.includes("medkit")} key={limb} onClick={()=>heal(limb)}>Восстановить: {limbNames[limb]}</button>)}</div></section>}
       <section className="solo-inventory pixel-panel"><p className="pixel-kicker">Рюкзак</p><div>{inventoryGroups.map(([item,count])=><article key={item}><b>{itemCards.find(card=>card.id===item)?.title||itemNames[item]||item}</b><span>×{count}</span><small>{itemInspectionRisk[item]?`Подозрительность: ${itemInspectionRisk[item]}`:"Обычная вещь"}</small></article>)}</div></section>
-      {save.phase==="planning"&&<section className="solo-action pixel-panel"><p className="pixel-kicker">Ваше решение</p><button onClick={()=>choose("stay",null)}><b>Остаться</b><span>{stationResources[human.position]?.label||"Локальная сцена"} · ресурс добавится в рюкзак</span></button>{availableNeighbors.map(({edge,target,status})=><button key={`${edge.id}-${target}`} onClick={()=>choose("tunnel",target,edge,status)}><b>Идти → {byId.get(target)?.name}</b><span>{edge.type==="transfer"?"Переход между ветками · кордон без тоннельной карты":status==="safe"?"Безопасный тоннель · высокий шанс тихого прохода":status==="unknown"?"Непонятный тоннель · событие почти наверняка":`Открытый тоннель · 10% тихого прохода`}</span></button>)}</section>}
+      {save.phase==="planning"&&<section className="solo-action pixel-panel"><p className="pixel-kicker">Ваше решение</p><button onClick={()=>choose("stay",null)}><b>Остаться</b><span>{stationResources[human.position]?.label||"Локальная сцена"} · ресурс добавится в рюкзак</span></button>{availableNeighbors.map(({edge,target,status})=>{const targetNode=byId.get(target);return <button key={`${edge.id}-${target}`} onClick={()=>choose("tunnel",target,edge,status)}><b>Идти → <i className="route-station-chip" style={{borderColor:targetNode?.color}}>{targetNode?.name}</i></b><span>{targetNode?.lineName} · {edge.type==="transfer"?"переход между ветками, кордон без тоннельной карты":status==="safe"?"безопасный тоннель, высокий шанс тихого прохода":status==="unknown"?"непонятный тоннель, событие почти наверняка":`открытый тоннель, 10% тихого прохода`}</span></button>;})}</section>}
       {save.phase==="challenge"&&currentChallenge&&<section className="solo-challenge pixel-panel"><span>{currentChallenge.category}</span><h2>{currentChallenge.title}</h2><p>{currentChallenge.scene}</p><strong>{currentChallenge.question}</strong><div className="solo-solutions">{options.map(option=>{const item=option.itemIds?.find(id=>human.inventory.includes(id));const affordable=!option.bulletCost||human.bullets>=option.bulletCost;const disabled=Boolean(option.itemIds?.length&&!item)||!affordable;return <button disabled={disabled} key={option.id} onClick={()=>resolveOption(option)}><b>{option.label}</b><span>{option.detail}</span>{option.itemIds?.length&&<small>{item?`Есть: ${itemNames[item]||item}`:`Нужно: ${option.itemIds.map(id=>itemNames[id]||id).join(" / ")}`}</small>}{option.bulletCost&&<small>Цена: {option.bulletCost} ◉</small>}</button>})}</div><small>Предмет — только один из вариантов. Ролевые решения и отступление не требуют карточки.</small></section>}
       {save.phase==="cordon"&&currentCordon&&<section className="solo-cordon pixel-panel"><span>{currentCordon.title}</span><h2>{currentCordon.inspection?"Досмотр":"Пошлина"}</h2><p>{currentCordon.guardText}</p>{currentCordon.inspection?<><strong>Этот пост не берёт обычную пошлину. Он проводит шмон.</strong><p>Подозрительные вещи дадут доплату {inspectionCost} ◉.</p><button disabled={human.bullets<inspectionCost} onClick={()=>resolveCordon("inspect")}>Пройти досмотр · {inspectionCost} ◉</button></>:<><strong>Этот пост берёт деньги, но не досматривает.</strong><button disabled={human.bullets<cordonToll} onClick={()=>resolveCordon("pay")}>Заплатить {cordonToll} ◉</button></>}<button onClick={()=>resolveCordon("retreat")}>Отказаться и вернуться</button></section>}
-      {(save.phase==="summary"||save.phase==="won"||save.phase==="dead")&&<section className={`solo-report pixel-panel ${save.phase}`}><p className="pixel-kicker">Итоги раунда</p><h2>{save.phase==="won"?"Вы дошли до Полиса":save.phase==="dead"?"Живая форма погибла":"Метро продолжает двигаться"}</h2>{save.report.map((line,index)=><p key={index}>{line}</p>)}{save.phase==="summary"&&<button className="pixel-primary" onClick={nextRound}>Следующий раунд <span>→</span></button>}{save.phase!=="summary"&&<button onClick={()=>{localStorage.removeItem(soloStorageKey);setSave(null);}}>Выбрать другую роль</button>}</section>}
+      {(save.phase==="summary"||save.phase==="won"||save.phase==="dead")&&<section className={`solo-report pixel-panel ${save.phase} ${save.phase==="summary"?"":`ending-${ending.kind}`}`}><p className="pixel-kicker">{save.phase==="summary"?"Итоги раунда":ending.kicker}</p><h2>{save.phase==="summary"?"Метро продолжает двигаться":ending.title}</h2>{save.phase!=="summary"&&<div className="solo-ending"><strong>{save.phase==="won"&&save.finishRank?`Место ${save.finishRank} из 12`:"Путь оборвался"}</strong><p>{ending.text}</p>{save.phase==="won"&&save.finishRank===1&&<b>Сделай скрин и пришли Тане ✦</b>}{save.phase==="won"&&<small>{soloGoalDone?"Личная цель тоже выполнена.":"Личная цель осталась невыполненной, но итог экспедиции определяется местом прибытия."}</small>}</div>}{save.report.map((line,index)=><p key={index}>{line}</p>)}{save.phase==="summary"&&<button className="pixel-primary" onClick={nextRound}>Следующий раунд <span>→</span></button>}{save.phase!=="summary"&&<button onClick={()=>{localStorage.removeItem(soloStorageKey);setSave(null);}}>Выбрать другую роль</button>}</section>}
       <section className="solo-bot-feed pixel-panel"><p className="pixel-kicker">Другие путники</p>{save.session.players.filter(player=>player.id!==save.humanId).map(player=><div key={player.id}><span>{player.name} · {roleCards.find(entry=>entry.id===player.roleId)?.name}</span><b>{byId.get(player.position)?.name}</b><i>{player.lostLimbs.length>=4?"погиб":`${4-player.lostLimbs.length}/4`}</i></div>)}</section>
     </aside></div>
   </main>;
