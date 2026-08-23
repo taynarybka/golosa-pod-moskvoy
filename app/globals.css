@@ -114,6 +114,22 @@ body{font-size:16px;line-height:1.45}button,input,select,textarea{font-size:14px
 .solo-ending{margin:13px 0;padding:15px;border:1px solid #58664f;background:#0c140f}.solo-ending>strong{display:block;color:var(--px-acid);font:900 23px/1 ui-monospace,monospace;text-transform:uppercase}.solo-ending>p{margin:10px 0;color:#c4ccc6;font-size:14px;line-height:1.45}.solo-ending>b{display:block;margin:14px 0 8px;padding:12px;background:var(--px-acid);color:#11180f;font-size:16px;text-align:center;text-transform:uppercase}.solo-ending>small{display:block;color:#86928a;font-size:12px;line-height:1.4}.solo-report.ending-super{border-color:var(--px-acid);box-shadow:0 0 28px rgba(215,239,83,.17)}.solo-report.ending-victory{border-color:#78984a}.solo-report.ending-arrived{border-color:#8b7445}.solo-report.ending-lost{border-color:#a14f3d;background:#211513}.solo-report.ending-lost .solo-ending{border-color:#733b31;background:#1a1110}.solo-report.ending-lost .solo-ending>strong{color:#ee8267}
 .solo-setup{position:relative}
 .setup-sound{position:absolute;right:30px;top:24px}
+.setup-flashlight-beam,.setup-flashlight-cursor{display:none}
+@media (hover:hover) and (pointer:fine){
+  .setup-flashlight-zone,.setup-flashlight-zone button,.setup-flashlight-zone select,.setup-flashlight-zone label{cursor:none}
+  .setup-flashlight-zone>section,.setup-flashlight-zone>.solo-role-preview,.setup-flashlight-zone>.setup-sound{position:relative;z-index:3}
+  .setup-flashlight-beam{display:block;position:fixed;z-index:2;left:0;top:0;width:300px;height:300px;border-radius:50%;pointer-events:none;opacity:0;background:radial-gradient(circle,rgba(255,245,189,.24) 0,rgba(227,220,147,.12) 34%,rgba(180,192,115,.045) 57%,transparent 73%);mix-blend-mode:screen;filter:blur(2px);transition:opacity .18s ease;will-change:transform}
+  .setup-flashlight-beam.active{opacity:1}
+  .setup-flashlight-cursor{display:block;position:fixed;z-index:20;left:0;top:0;width:42px;height:17px;border:1px solid #dde4cc;border-radius:3px 9px 9px 3px;pointer-events:none;opacity:0;background:linear-gradient(180deg,#879387 0 20%,#303c35 22% 68%,#151d19 70%);box-shadow:0 2px 5px #000,0 0 8px rgba(220,235,170,.25);transform-origin:0 0;transition:opacity .12s ease;will-change:transform}
+  .setup-flashlight-cursor.active{opacity:1}
+  .setup-flashlight-cursor:before{content:"";position:absolute;left:-9px;top:-4px;width:13px;height:23px;border:1px solid #d8dfc9;border-radius:4px 1px 1px 4px;background:linear-gradient(90deg,#171e1a,#667268);box-shadow:-3px 0 9px rgba(255,243,170,.65)}
+  .setup-flashlight-cursor:after{content:"";position:absolute;right:7px;top:-4px;width:8px;height:4px;border:1px solid #aeb8a7;border-bottom:0;border-radius:2px 2px 0 0;background:#2c3731}
+  .setup-flashlight-cursor i{position:absolute;left:8px;top:6px;width:20px;height:4px;border-radius:3px;background:repeating-linear-gradient(90deg,#111814 0 2px,#627067 2px 4px)}
+  .setup-flashlight-zone button,.setup-flashlight-zone select,.setup-flashlight-zone .solo-role-preview{transition:border-color .18s ease,background-color .18s ease,box-shadow .18s ease,filter .18s ease}
+  .setup-flashlight-zone button:hover,.setup-flashlight-zone select:hover{border-color:#e7f58b;box-shadow:0 0 0 1px rgba(215,239,83,.38),0 0 24px rgba(228,241,150,.18);filter:brightness(1.12)}
+  .setup-flashlight-zone .solo-role-preview:hover{border-color:#879675;box-shadow:14px 14px 0 #030604,0 0 34px rgba(229,239,170,.15);filter:brightness(1.08)}
+  .setup-flashlight-zone label:hover{color:#dce6d4}
+}
 .ambient-toggle{border-color:#62715f;color:#b8c6bb;background:#111b15}
 .ambient-toggle:hover{border-color:var(--px-acid);color:var(--px-acid)}
 .solo-title{color:#f0f3ef;font-weight:900;text-transform:uppercase}
