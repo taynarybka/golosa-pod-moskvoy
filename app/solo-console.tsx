@@ -4,6 +4,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { challengeCards, itemCards } from "./card-data";
+import { activeCaravansForRound } from "./caravan-data";
 import { challengeSolutions, type ChallengeOption } from "./challenge-solutions";
 import { getCordonProfile, itemInspectionRisk, roleCards } from "./game-data";
 import { metroData } from "./metro-data";
@@ -180,7 +181,16 @@ export function SoloConsole(){
     scheduleCycle();musicTimerRef.current=window.setInterval(scheduleCycle,cycleLength*1000);audioRef.current=context;await context.resume();setMusicOn(true);
   };
   const human=save?.session.players[save.humanId-1];const role=human?roleCards.find(entry=>entry.id===human.roleId):undefined;
-  const availableNeighbors=human&&save?neighbors(human.position,save.session):[];
+  const availableNeighbors=human&&save?(()=>{
+    const ordinary=neighbors(human.position,save.session);
+    const caravanRoutes=activeCaravansForRound(save.session.round).flatMap(caravan=>{
+      if(caravan.resting||caravan.stationId!==human.position)return [];
+      const edge=edges.find(entry=>(entry.source===caravan.stationId&&entry.target===caravan.nextStationId)||(entry.target===caravan.stationId&&entry.source===caravan.nextStationId));
+      return edge?[{edge,target:caravan.nextStationId,status:"caravan"}]:[];
+    });
+    const combined=[...ordinary,...caravanRoutes];
+    return combined.filter((option,index)=>combined.findIndex(candidate=>candidate.edge.id===option.edge.id&&candidate.target===option.target)===index);
+  })():[];
   const currentChallenge=save?challengeCards.find(card=>card.id===save.session.activeChallenge):undefined;
   const currentEdge=save?.pendingEdgeId?edges.find(edge=>edge.id===save.pendingEdgeId):undefined;
   const currentCordon=currentEdge?getCordonProfile(currentEdge.id):undefined;
@@ -196,6 +206,11 @@ export function SoloConsole(){
     if(!edge||!target)return current;
     const pending={...current,session,pendingTarget:target,pendingEdgeId:edge.id};
     if(edge.type==="transfer")return {...pending,phase:"cordon",report:["Переход между линиями ведёт только через кордон. Тоннельного испытания здесь нет."]};
+    const caravan=activeCaravansForRound(session.round).find(entry=>!entry.resting&&entry.stationId===current.session.players[current.humanId-1].position&&entry.nextStationId===target);
+    if(caravan){
+      const reward=Math.random()<.5?commonRewards[Math.floor(Math.random()*commonRewards.length)]:undefined;
+      return finishTurn(pending,{move:true,quiet:true,rewardItem:reward,note:`Вы прошли тоннель вместе с караваном «${caravan.name}». Караван мистически миновал все преграды, испытание не проводилось.${reward?" Погонщик оставил вам полезную вещь.":" Путь обошёлся без происшествий."}`});
+    }
     const quietChance=status==="safe"?.45:.10;
     if(Math.random()<quietChance)return finishTurn(pending,{move:true,quiet:true,note:status==="safe"?"Безопасный тоннель оказался тихим: вы прошли без испытания.":"Обычный пустой перегон: в этот раз ничего не произошло."});
     const challenge=pickChallenge();session.phase="challenge";session.activeChallenge=challenge.id;
