@@ -189,21 +189,72 @@ function PlayerPhone({state,playerId,busy,act}:{state:NetworkSession;playerId:nu
 function CommonPanel({state}:{state:NetworkSession}){return <div className="common-layout"><div className="common-head"><p className="pixel-kicker">Общий терминал · без личных данных</p><h1>Карта живых</h1><p>{state.gmMessage}</p></div><MetroNetworkMap state={state} focusIds={state.players.slice(0,state.playerCount).filter(p=>p.lostLimbs.length<4).map(p=>p.position)} compact={false}/><aside className="common-log pixel-panel"><span>Последние публичные события</span>{state.log.slice(0,8).map(entry=><p key={entry.id}>{entry.text}</p>)}</aside></div>}
 
 const rolePortraitIndex:Record<string,number>={mag:24,skeptic:12,mother:19,teen:20,scientist:7,medic:3,trackman:0,cartographer:6,signalman:1,shuttle:4,veteran:11,smuggler:2};
-export function RolePortrait({index=0,roleId}:{index?:number;roleId?:string}){const portrait=roleId?rolePortraitIndex[roleId]??index:index;return <div className="role-portrait" style={{backgroundImage:"url('./npc-atlas-v1.png?v=2')",backgroundPosition:`${(portrait%5)*25}% ${Math.floor(portrait/5)*25}%`}} aria-hidden="true"/>;}
+/** Доля здоровья персонажа: в игре её считают целыми конечностями. */
+export function healthRatio(player:{lostLimbs:string[]}){return Math.max(0,Math.min(1,(4-player.lostLimbs.length)/4));}
+/** Цвет полоски здоровья: от зелёного при полном здоровье к красному. */
+export function healthColor(ratio:number){return `hsl(${Math.round(ratio*118)} 76% 48%)`;}
+export function RolePortrait({index=0,roleId,health}:{index?:number;roleId?:string;health?:number}){const portrait=roleId?rolePortraitIndex[roleId]??index:index;return <div className="role-portrait" style={{backgroundImage:"url('./npc-atlas-v1.png?v=2')",backgroundPosition:`${(portrait%5)*25}% ${Math.floor(portrait/5)*25}%`}} aria-hidden="true">{health!=null&&<i className="health-bar"><b style={{width:`${health*100}%`,background:healthColor(health)}}/></i>}</div>;}
 
 function StationBrief({nodeId}:{nodeId?:string}){if(!nodeId)return null;const node=nodeById.get(nodeId);const resource=stationResources[nodeId];const lore=stationLore[nodeId];const story=stationStories[nodeId];const mystery=getStationMystery(node?.name||"");return <article className="station-brief pixel-panel"><span>Текущая станция</span><h3>{node?.name}</h3><b>{resource?.icon} {resource?.label}</b><p>{mystery||story?.fact||lore?.after2026||"Сведения о станции пока не подтверждены."}</p></article>}
 
-function networkTrackGeometry(edge:(typeof rawEdges)[number],direction:"forward"|"backward"){
+type MapPoint={x:number;y:number};
+const TRACK_OFFSET=5.5, CORNER_RADIUS=13, CORNER_SAMPLES=8, MAX_ZOOM=12;
+const lineNeighbors=new Map<string,string[]>();
+rawEdges.filter(edge=>edge.type!=="transfer").forEach(edge=>{lineNeighbors.set(edge.source,[...(lineNeighbors.get(edge.source)||[]),edge.target]);lineNeighbors.set(edge.target,[...(lineNeighbors.get(edge.target)||[]),edge.source]);});
+/** Соседняя станция той же линии, продолжающая путь «сквозь» node в сторону, противоположную toward. */
+function lineContinuation(node:MapPoint&{id:string},toward:MapPoint&{id:string}):MapPoint|null{
+  const dx=toward.x-node.x,dy=toward.y-node.y,len=Math.hypot(dx,dy)||1;
+  let best:MapPoint|null=null,bestDot=Infinity;
+  for(const id of lineNeighbors.get(node.id)||[]){
+    if(id===toward.id)continue;const next=nodeById.get(id);if(!next)continue;
+    const ex=next.x-node.x,ey=next.y-node.y,el=Math.hypot(ex,ey)||1;const dot=(dx*ex+dy*ey)/(len*el);
+    if(dot<bestDot){bestDot=dot;best=next;}
+  }
+  return bestDot<0.35?best:null;
+}
+/**
+ * Скругление поворота на станции: перегоны остаются прямыми, а угол между ними
+ * заменяется квадратичной дугой. Дуга делится пополам между двумя перегонами,
+ * поэтому обе половины считаются из одной тройки станций и стыкуются без разрыва.
+ * Возвращает точки половины дуги от станции (её середины) к прямому участку перегона.
+ */
+function cornerHalf(station:MapPoint,other:MapPoint|null,toward:MapPoint):{start:MapPoint;points:{p:MapPoint;t:MapPoint}[]}{
+  if(!other)return{start:station,points:[]};
+  const lenO=Math.hypot(other.x-station.x,other.y-station.y),lenT=Math.hypot(toward.x-station.x,toward.y-station.y);
+  const uo={x:(other.x-station.x)/(lenO||1),y:(other.y-station.y)/(lenO||1)},ut={x:(toward.x-station.x)/(lenT||1),y:(toward.y-station.y)/(lenT||1)};
+  const angle=Math.acos(Math.max(-1,Math.min(1,uo.x*ut.x+uo.y*ut.y)));
+  if(angle>Math.PI-0.06)return{start:station,points:[]};
+  const r=Math.min(CORNER_RADIUS,lenO*0.42,lenT*0.42);
+  const t1={x:station.x+uo.x*r,y:station.y+uo.y*r},t2={x:station.x+ut.x*r,y:station.y+ut.y*r};
+  const mid={x:(t1.x+2*station.x+t2.x)/4,y:(t1.y+2*station.y+t2.y)/4},control={x:(station.x+t2.x)/2,y:(station.y+t2.y)/2};
+  const points:{p:MapPoint;t:MapPoint}[]=[];
+  for(let i=0;i<=CORNER_SAMPLES;i+=1){
+    const u=i/CORNER_SAMPLES,v=1-u;
+    points.push({p:{x:v*v*mid.x+2*v*u*control.x+u*u*t2.x,y:v*v*mid.y+2*v*u*control.y+u*u*t2.y},t:{x:2*v*(control.x-mid.x)+2*u*(t2.x-control.x),y:2*v*(control.y-mid.y)+2*u*(t2.y-control.y)}});
+  }
+  return{start:mid,points};
+}
+function buildTrackPaths(edge:(typeof rawEdges)[number]):{forward:string;backward:string}|null{
   const a=nodeById.get(edge.source),b=nodeById.get(edge.target);
   if(!a||!b)return null;
-  const dx=b.x-a.x,dy=b.y-a.y,length=Math.max(1,Math.hypot(dx,dy));
-  const side=direction==="forward"?1:-1;
-  const ox=(-dy/length)*5.5*side,oy=(dx/length)*5.5*side;
-  return{x1:a.x+ox,y1:a.y+oy,x2:b.x+ox,y2:b.y+oy};
+  const head=cornerHalf(a,lineContinuation(a,b),b),tail=cornerHalf(b,lineContinuation(b,a),a);
+  const straight={x:b.x-a.x,y:b.y-a.y};
+  const samples:{p:MapPoint;t:MapPoint}[]=[...head.points];
+  const headEnd=head.points.length?head.points[head.points.length-1].p:a,tailEnd=tail.points.length?tail.points[tail.points.length-1].p:b;
+  samples.push({p:headEnd,t:straight},{p:tailEnd,t:straight});
+  for(let i=tail.points.length-1;i>=0;i-=1){const point=tail.points[i];samples.push({p:point.p,t:{x:-point.t.x,y:-point.t.y}});}
+  const forward:string[]=[],backward:string[]=[];
+  samples.forEach(({p,t})=>{const len=Math.hypot(t.x,t.y)||1,nx=-t.y/len*TRACK_OFFSET,ny=t.x/len*TRACK_OFFSET;forward.push(`${(p.x+nx).toFixed(2)} ${(p.y+ny).toFixed(2)}`);backward.push(`${(p.x-nx).toFixed(2)} ${(p.y-ny).toFixed(2)}`);});
+  return{forward:`M${forward.join(" L")}`,backward:`M${backward.join(" L")}`};
+}
+const trackPaths=new Map(rawEdges.map(edge=>[edge.id,buildTrackPaths(edge)] as const));
+function networkTrackGeometry(edge:(typeof rawEdges)[number],direction:"forward"|"backward"){
+  const paths=trackPaths.get(edge.id);
+  return paths?{d:paths[direction]}:null;
 }
 
 function networkTrackStyle(status:"normal"|"safe"|"unknown"|"closed",color:string){
-  if(status==="safe")return{stroke:"#3bd294",strokeWidth:5.5,opacity:.95};
+  if(status==="safe")return{stroke:color,strokeWidth:4.5,opacity:1};
   if(status==="unknown")return{stroke:"#8b815f",strokeWidth:5.5,strokeDasharray:"3 7",opacity:.95};
   if(status==="closed")return{stroke:"#171b18",strokeWidth:8,strokeDasharray:"12 4",opacity:1};
   return{stroke:color,strokeWidth:3.5,opacity:.58};
@@ -212,11 +263,65 @@ function networkTrackStyle(status:"normal"|"safe"|"unknown"|"closed",color:strin
 type SelectedTrack={edgeId:string;direction:"forward"|"backward"|"transfer"};
 const trackStatusLabels:Record<string,string>={normal:"Открытый тоннель",safe:"Безопасный тоннель",unknown:"Непонятный тоннель",closed:"Закрытый тоннель",cordon:"Межлинейный кордон"};
 
+const legendStorageKey = "golosa-map-legend-open";
+function LegendTrack({stroke,dash,width=4,opacity=1,glow=false}:{stroke:string;dash?:string;width?:number;opacity?:number;glow?:boolean}){return <svg viewBox="0 0 34 12" aria-hidden="true">{glow&&<><line x1="4" y1="6" x2="30" y2="6" stroke={stroke} strokeWidth={12} strokeLinecap="round" opacity={.18}/><line x1="4" y1="6" x2="30" y2="6" stroke={stroke} strokeWidth={7} strokeLinecap="round" opacity={.34}/></>}<line x1="2" y1="6" x2="32" y2="6" stroke={stroke} strokeWidth={width} strokeDasharray={dash} strokeLinecap="round" opacity={opacity}/>{glow&&<line x1="3" y1="6" x2="31" y2="6" stroke="#fff8e6" strokeWidth={1.2} strokeLinecap="round" opacity={.6}/>}</svg>;}
+function MapLegend(){
+  const [open,setOpen]=useState(true);
+  useEffect(()=>{try{const stored=localStorage.getItem(legendStorageKey);if(stored!=null)setOpen(stored==="1");else if(window.innerWidth<760)setOpen(false);}catch{/* Хранилище недоступно, оставляем значение по умолчанию. */}},[]);
+  const toggle=()=>{setOpen(value=>{try{localStorage.setItem(legendStorageKey,value?"0":"1");}catch{/* Хранилище недоступно. */}return !value;});};
+  return <div className={`map-legend${open?" open":""}`}>
+    <button type="button" className="map-legend-toggle" aria-expanded={open} onClick={toggle}><span>Легенда</span><b>{open?"−":"+"}</b></button>
+    {open&&<div className="map-legend-body">
+      <section><h4>Станции</h4>
+        <div><svg viewBox="0 0 34 12" aria-hidden="true"><circle cx="17" cy="6" r="3" fill="#D92B2B" stroke="#101612"/></svg><span>Станция, цвет линии</span></div>
+        <div><svg viewBox="0 0 34 12" aria-hidden="true"><circle cx="17" cy="6" r="5" fill="#d7ef53" stroke="#101612"/></svg><span>Станция с живыми игроками</span></div>
+        <div><svg viewBox="0 0 34 12" aria-hidden="true"><circle cx="17" cy="6" r="3.5" fill="#160f1b" stroke="#9a6ab0" strokeWidth="2.5"/></svg><span>Поглощена Чёрным нечто</span></div>
+        <div><svg viewBox="0 0 34 12" aria-hidden="true"><text x="17" y="6" fill="#d7ef53" stroke="#050905" strokeWidth="2" paintOrder="stroke" fontSize="9" fontWeight="900" textAnchor="middle" dominantBaseline="middle" fontFamily="Arial,sans-serif">Полис</text></svg><span>Выбранная станция</span></div>
+      </section>
+      <section><h4>Тоннели</h4>
+        <div><LegendTrack stroke="#D92B2B" opacity={.7}/><span>Открытый, два пути</span></div>
+        <div><LegendTrack stroke="#D92B2B" width={4} glow/><span>Безопасный, светится</span></div>
+        <div><LegendTrack stroke="#8b815f" width={5} dash="3 5"/><span>Непонятный</span></div>
+        <div><LegendTrack stroke="#171b18" width={6} dash="8 3"/><span>Закрытый</span></div>
+        <div><LegendTrack stroke="#ae8b47" width={2.5} dash="3 3"/><span>Кордон между линиями</span></div>
+      </section>
+      <section><h4>Фигуры</h4>
+        <div><svg viewBox="0 0 34 12" aria-hidden="true"><rect x="11" y="0.5" width="12" height="9" rx="1.5" fill="#263229" stroke="#d7ef53" strokeWidth="1.5"/><rect x="12" y="10" width="10" height="1.6" rx=".8" fill="#4ec24e"/></svg><span>Игрок и полоска здоровья</span></div>
+        <div><svg viewBox="0 0 34 12" aria-hidden="true"><circle cx="17" cy="6" r="5.5" fill="#d7ef53" stroke="#101610" strokeWidth="1.5"/><text x="17" y="6.5" fontSize="7" fontWeight="900" textAnchor="middle" dominantBaseline="middle" fill="#111711" fontFamily="ui-monospace,monospace">2</text></svg><span>Сколько игроков на станции</span></div>
+        <div><svg viewBox="0 0 34 12" aria-hidden="true"><circle cx="17" cy="6" r="5" fill="#d6ae54" stroke="#101612" strokeWidth="1.2"/><text x="17" y="6.5" fontSize="7" fontWeight="900" textAnchor="middle" dominantBaseline="middle" fill="#111" fontFamily="ui-monospace,monospace">1</text></svg><span>Свободные NPC</span></div>
+        <div><i className="map-legend-emoji">🐫</i><span>Караван, тоннель без испытания</span></div>
+      </section>
+    </div>}
+  </div>;
+}
+
 export function MetroNetworkMap({state,focusIds,compact}:{state:NetworkSession;focusIds:string[];compact:boolean}){
   const [zoom,setZoom]=useState(1);const [query,setQuery]=useState("");const [selected,setSelected]=useState<string|null>(focusIds[0]||null);const [selectedTrack,setSelectedTrack]=useState<SelectedTrack|null>(null);const [pan,setPan]=useState({x:0,y:0});const [dragging,setDragging]=useState(false);
   const dragRef=useRef<{pointerId:number;startX:number;startY:number;originX:number;originY:number;moved:boolean}|null>(null);const suppressClickRef=useRef(false);
+  const svgRef=useRef<SVGSVGElement|null>(null);
   const center=selected?nodeById.get(selected):undefined;
-  const k=fitTransform.k*zoom;const baseTx=center&&zoom>1?W/2-center.x*k:fitTransform.x*zoom+(W/2)*(1-zoom);const baseTy=center&&zoom>1?H/2-center.y*k:fitTransform.y*zoom+(H/2)*(1-zoom);const tx=baseTx+pan.x;const ty=baseTy+pan.y;
+  const baseFor=useCallback((z:number)=>{const kk=fitTransform.k*z;return center&&z>1?{k:kk,x:W/2-center.x*kk,y:H/2-center.y*kk}:{k:kk,x:fitTransform.x*z+(W/2)*(1-z),y:fitTransform.y*z+(H/2)*(1-z)};},[center]);
+  const base=baseFor(zoom);const k=base.k;const tx=base.x+pan.x;const ty=base.y+pan.y;
+  const viewRef=useRef({zoom,pan,baseFor});
+  useEffect(()=>{viewRef.current={zoom,pan,baseFor};},[zoom,pan,baseFor]);
+  useEffect(()=>{
+    const svg=svgRef.current;if(!svg)return;
+    const onWheel=(event:WheelEvent)=>{
+      event.preventDefault();
+      const {zoom:currentZoom,pan:currentPan,baseFor:currentBase}=viewRef.current;
+      const nextZoom=Math.min(MAX_ZOOM,Math.max(.75,currentZoom*Math.exp(-event.deltaY*.0012)));
+      if(nextZoom===currentZoom)return;
+      const ctm=svg.getScreenCTM();if(!ctm)return;
+      const point=new DOMPoint(event.clientX,event.clientY).matrixTransform(ctm.inverse());
+      const before=currentBase(currentZoom),after=currentBase(nextZoom);
+      const mapX=(point.x-before.x-currentPan.x)/before.k,mapY=(point.y-before.y-currentPan.y)/before.k;
+      setZoom(nextZoom);
+      setPan({x:point.x-mapX*after.k-after.x,y:point.y-mapY*after.k-after.y});
+    };
+    svg.addEventListener("wheel",onWheel,{passive:false});
+    return()=>svg.removeEventListener("wheel",onWheel);
+  },[]);
+  const labelSize=Math.min(7,13/k);const focusLabelSize=Math.max(labelSize+1,14/k);
   const search=()=>{const q=query.trim().toLowerCase().replaceAll("ё","е");const found=mapNodes.find(n=>n.name.toLowerCase().replaceAll("ё","е").includes(q));if(found){setSelected(found.id);setSelectedTrack(null);setPan({x:0,y:0});setZoom(3.2);}};
   const startPan=(event:React.PointerEvent<SVGSVGElement>)=>{if(event.button!==0)return;dragRef.current={pointerId:event.pointerId,startX:event.clientX,startY:event.clientY,originX:pan.x,originY:pan.y,moved:false};};
   const movePan=(event:React.PointerEvent<SVGSVGElement>)=>{const drag=dragRef.current;if(!drag||drag.pointerId!==event.pointerId)return;const screenDx=event.clientX-drag.startX,screenDy=event.clientY-drag.startY;if(!drag.moved&&Math.hypot(screenDx,screenDy)<=5)return;if(!drag.moved){drag.moved=true;event.currentTarget.setPointerCapture(event.pointerId);setDragging(true);}const rect=event.currentTarget.getBoundingClientRect();setPan({x:drag.originX+screenDx*(W/rect.width),y:drag.originY+screenDy*(H/rect.height)});};
@@ -233,13 +338,18 @@ export function MetroNetworkMap({state,focusIds,compact}:{state:NetworkSession;f
   const selectedMystery=selected?getStationMystery(nodeById.get(selected)?.name||""):null;
   return <div className={`${compact?"network-map compact":"network-map"}${dragging?" dragging":""}`}>
     <div className="map-search"><input value={query} onChange={e=>setQuery(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")search();}} placeholder="Найти станцию"/><button onClick={search}>Найти</button></div>
-    <div className="network-map-hint">Тяните карту · нажимайте станции и тоннели · 🐫 караваны</div>
-    <div className="network-map-zoom"><button onClick={()=>setZoom(v=>Math.min(5,v*1.35))}>+</button><button onClick={()=>setZoom(v=>Math.max(.75,v/1.35))}>−</button><button onClick={()=>{setZoom(1);setSelected(null);setSelectedTrack(null);setPan({x:0,y:0});}}>Вся</button></div>
-    <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Интерактивная карта метро, два тоннеля между станциями, позиции групп и караванов" onPointerDown={startPan} onPointerMove={movePan} onPointerUp={endPan} onPointerCancel={endPan}>
+    <div className="network-map-hint">Тяните карту · колесо — масштаб · нажимайте станции и тоннели</div>
+    <MapLegend/>
+    <div className="network-map-zoom"><button onClick={()=>setZoom(v=>Math.min(MAX_ZOOM,v*1.35))}>+</button><button onClick={()=>setZoom(v=>Math.max(.75,v/1.35))}>−</button><button onClick={()=>{setZoom(1);setSelected(null);setSelectedTrack(null);setPan({x:0,y:0});}}>Вся</button></div>
+    <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Интерактивная карта метро, два тоннеля между станциями, позиции групп и караванов" onPointerDown={startPan} onPointerMove={movePan} onPointerUp={endPan} onPointerCancel={endPan}>
       <g transform={`translate(${tx} ${ty}) scale(${k})`}>
-        {rawEdges.flatMap(edge=>{const a=nodeById.get(edge.source),b=nodeById.get(edge.target);if(!a||!b)return[];if(edge.type==="transfer"){const label=`Кордон: ${a.name} — ${b.name}`;return[<g key={edge.id} className={selectedTrack?.edgeId===edge.id?"net-track-group selected":"net-track-group"}><line role="button" tabIndex={0} aria-label={label} className="network-track-hit" x1={a.x} y1={a.y} x2={b.x} y2={b.y} onClick={()=>chooseTrack({edgeId:edge.id,direction:"transfer"})} onKeyDown={event=>{if(event.key==="Enter"||event.key===" ")chooseTrack({edgeId:edge.id,direction:"transfer"});}}/><line className="network-transfer" x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="#ae8b47" strokeWidth={2.5} strokeDasharray="3 3" opacity={.8}/></g>];}return(["forward","backward"] as const).map(direction=>{const geometry=networkTrackGeometry(edge,direction);const status=state.world.edges[`${edge.id}::${direction}`]||"normal";const from=direction==="forward"?a:b,to=direction==="forward"?b:a;return geometry?<g key={`${edge.id}-${direction}`} className={selectedTrack?.edgeId===edge.id&&selectedTrack.direction===direction?"net-track-group selected":"net-track-group"}><line {...geometry} role="button" tabIndex={0} aria-label={`${trackStatusLabels[status]}: ${from.name} — ${to.name}`} className="network-track-hit" onClick={()=>chooseTrack({edgeId:edge.id,direction})} onKeyDown={event=>{if(event.key==="Enter"||event.key===" ")chooseTrack({edgeId:edge.id,direction});}}/><line {...geometry} {...networkTrackStyle(status,edge.color)} className={`network-track ${status}`}/></g>:null;});})}
-        {mapNodes.map(node=>{const stationedPlayers=playersByStation.get(node.id)||[];const count=stationedPlayers.length;const npcCount=npcGroups.get(node.id)||0;const focus=focusIds.includes(node.id);const swallowed=state.world.swallowedStations.includes(node.id);return <g key={node.id} role="button" tabIndex={0} aria-label={`Станция ${node.name}`} className={`${selected===node.id?"net-station selected":"net-station"}${swallowed?" swallowed":""}`} onClick={()=>chooseStation(node.id)} onKeyDown={event=>{if(event.key==="Enter"||event.key===" ")chooseStation(node.id);}}><circle className="net-station-hit" cx={node.x} cy={node.y} r={11}/><circle cx={node.x} cy={node.y} r={focus?5:2.5} fill={swallowed?"#160f1b":focus?"#d7ef53":node.color} stroke={swallowed?"#9a6ab0":"#101612"} strokeWidth={swallowed?3:1}/>{stationedPlayers.slice(0,6).map((player,markerIndex)=>{const portrait=rolePortraitIndex[player.roleId]??0;const total=Math.min(stationedPlayers.length,6),columns=Math.min(total,3),row=Math.floor(markerIndex/3),column=markerIndex%3,dx=(column-(columns-1)/2)*25;return <foreignObject key={player.id} className="net-player-portrait" x={node.x-13+dx} y={node.y-43-row*27} width={26} height={26}><div title={`${player.name} · ${roleCards.find(role=>role.id===player.roleId)?.name}`} style={{backgroundImage:"url('./npc-atlas-v1.png?v=2')",backgroundPosition:`${(portrait%5)*25}% ${Math.floor(portrait/5)*25}%`}}/></foreignObject>;})}{count>0&&<><circle className="net-player-badge" cx={node.x+8} cy={node.y-8} r={7}/><text className="net-player-count" x={node.x+8} y={node.y-8}>{count}</text></>}{npcCount>0&&<><circle className="net-npc-badge" cx={node.x-8} cy={node.y-8} r={6}/><text className="net-npc-count" x={node.x-8} y={node.y-8}>{npcCount}</text></>}{(focus||selected===node.id)&&<text x={node.x+8} y={node.y+4} className="net-station-name">{node.name}</text>}</g>;})}
+        {rawEdges.flatMap(edge=>{const a=nodeById.get(edge.source),b=nodeById.get(edge.target);if(!a||!b)return[];if(edge.type==="transfer"){const label=`Кордон: ${a.name} — ${b.name}`;return[<g key={edge.id} className={selectedTrack?.edgeId===edge.id?"net-track-group selected":"net-track-group"}><line role="button" tabIndex={0} aria-label={label} className="network-track-hit" x1={a.x} y1={a.y} x2={b.x} y2={b.y} onClick={()=>chooseTrack({edgeId:edge.id,direction:"transfer"})} onKeyDown={event=>{if(event.key==="Enter"||event.key===" ")chooseTrack({edgeId:edge.id,direction:"transfer"});}}/><line className="network-transfer" x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="#ae8b47" strokeWidth={2.5} strokeDasharray="3 3" opacity={.8}/></g>];}return(["forward","backward"] as const).map(direction=>{const geometry=networkTrackGeometry(edge,direction);const status=state.world.edges[`${edge.id}::${direction}`]||"normal";const from=direction==="forward"?a:b,to=direction==="forward"?b:a;return geometry?<g key={`${edge.id}-${direction}`} className={selectedTrack?.edgeId===edge.id&&selectedTrack.direction===direction?"net-track-group selected":"net-track-group"}><path {...geometry} fill="none" role="button" tabIndex={0} aria-label={`${trackStatusLabels[status]}: ${from.name} — ${to.name}`} className="network-track-hit" onClick={()=>chooseTrack({edgeId:edge.id,direction})} onKeyDown={event=>{if(event.key==="Enter"||event.key===" ")chooseTrack({edgeId:edge.id,direction});}}/>{status==="safe"&&<><path {...geometry} className="network-track-glow wide" stroke={edge.color}/><path {...geometry} className="network-track-glow near" stroke={edge.color}/></>}<path {...geometry} fill="none" {...networkTrackStyle(status,edge.color)} className={`network-track ${status}`}/>{status==="safe"&&<path {...geometry} className="network-track-core"/>}</g>:null;});})}
+        {mapNodes.map(node=>{const stationedPlayers=playersByStation.get(node.id)||[];const count=stationedPlayers.length;const npcCount=npcGroups.get(node.id)||0;const focus=focusIds.includes(node.id);const swallowed=state.world.swallowedStations.includes(node.id);return <g key={node.id} role="button" tabIndex={0} aria-label={`Станция ${node.name}`} className={`${selected===node.id?"net-station selected":"net-station"}${swallowed?" swallowed":""}`} onClick={()=>chooseStation(node.id)} onKeyDown={event=>{if(event.key==="Enter"||event.key===" ")chooseStation(node.id);}}><circle className="net-station-hit" cx={node.x} cy={node.y} r={11}/><circle cx={node.x} cy={node.y} r={focus?5:2.5} fill={swallowed?"#160f1b":focus?"#d7ef53":node.color} stroke={swallowed?"#9a6ab0":"#101612"} strokeWidth={swallowed?3:1}/>{stationedPlayers.slice(0,6).map((player,markerIndex)=>{const portrait=rolePortraitIndex[player.roleId]??0;const total=Math.min(stationedPlayers.length,6),columns=Math.min(total,3),row=Math.floor(markerIndex/3),column=markerIndex%3,dx=(column-(columns-1)/2)*25;return <foreignObject key={player.id} className="net-player-portrait" x={node.x-13+dx} y={node.y-47-row*31} width={26} height={31}><div className="net-portrait-frame" title={`${player.name} · ${roleCards.find(role=>role.id===player.roleId)?.name} · здоровье ${Math.round(healthRatio(player)*100)}%`}><div className="net-portrait-face" style={{backgroundImage:"url('./npc-atlas-v1.png?v=2')",backgroundPosition:`${(portrait%5)*25}% ${Math.floor(portrait/5)*25}%`}}/><i className="net-portrait-health"><b style={{width:`${healthRatio(player)*100}%`,background:healthColor(healthRatio(player))}}/></i></div></foreignObject>;})}{count>0&&<><circle className="net-player-badge" cx={node.x+8} cy={node.y-8} r={7}/><text className="net-player-count" x={node.x+8} y={node.y-8}>{count}</text></>}{npcCount>0&&<><circle className="net-npc-badge" cx={node.x-8} cy={node.y-8} r={6}/><text className="net-npc-count" x={node.x-8} y={node.y-8}>{npcCount}</text></>}</g>;})}
         {caravans.map((caravan,index)=>{const node=nodeById.get(caravan.stationId);if(!node)return null;const atSame=caravans.filter(candidate=>candidate.stationId===caravan.stationId);const slot=atSame.findIndex(candidate=>candidate.id===caravan.id);const dx=(slot-(atSame.length-1)/2)*15;return <g key={caravan.id} role="button" tabIndex={0} aria-label={`${caravan.name}, станция ${node.name}`} className="net-caravan" transform={`translate(${node.x+dx} ${node.y+17+(index%2)*2})`} onClick={()=>chooseStation(node.id)} onKeyDown={event=>{if(event.key==="Enter"||event.key===" ")chooseStation(node.id);}}><text className="net-caravan-icon">🐫</text><title>{caravan.name} · {caravan.resting?"стоит один ход":`следует к станции ${nodeById.get(caravan.nextStationId)?.name}`}</title></g>;})}
+        <g className="net-labels" aria-hidden="true">
+          {mapNodes.filter(node=>node.id!==selected).map(node=>{const focus=focusIds.includes(node.id);const swallowed=state.world.swallowedStations.includes(node.id);return <text key={node.id} x={node.x+(focus?7:4.5)} y={node.y+(focus?4:3)} fontSize={focus?focusLabelSize:labelSize} className={`net-station-label${focus?" focus":""}${swallowed?" swallowed":""}`}>{node.name}</text>;})}
+          {center&&<text x={center.x+8} y={center.y+4.5} fontSize={focusLabelSize} className="net-station-label selected">{center.name}</text>}
+        </g>
       </g>
     </svg>
     {selectedTrack&&trackEdge&&<div className="map-fact track-fact"><span>{trackStatusLabels[trackStatus||"normal"]}</span><b>{trackFrom?.name} → {trackTo?.name}</b><p>{selectedTrack.direction==="transfer"?`Переход между линиями · кордон ${getCordonProfile(trackEdge.id).price} ◉`:`Направление: ${selectedTrack.direction==="forward"?"туда":"обратно"}`}</p><small>Нажатие показывает сведения. Для движения используйте решение хода.</small></div>}

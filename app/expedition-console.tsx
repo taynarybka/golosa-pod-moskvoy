@@ -7,7 +7,7 @@ import { challengeCards } from "./card-data";
 import { challengeSolutions, type ChallengeOption } from "./challenge-solutions";
 import { cordonRules, getCordonProfile, itemInspectionRisk, npcCards, roleCards } from "./game-data";
 import { metroData } from "./metro-data";
-import { MetroNetworkMap, RolePortrait } from "./network-console";
+import { healthRatio, MetroNetworkMap, RolePortrait } from "./network-console";
 import { createDemoSession, type NetworkPlayer, type NetworkSession, type SessionTime } from "./network-session";
 import { scenarioEdgeMarks, stationResources } from "./scenario-data";
 
@@ -637,6 +637,20 @@ export function ExpeditionConsole() {
       brokerRef.current?.end(true);
     };
   }, [clientId]);
+  const [pressedState, setPressedState] = useState<{ key: string; stamp: string } | null>(null);
+  const [damageFlash, setDamageFlash] = useState(0);
+  const lostLimbsRef = useRef<number | null>(null);
+  const myLostLimbs = (() => { const playerId = room?.playerByClient[clientId]; return playerId && room?.save ? room.save.session.players[playerId - 1]?.lostLimbs.length : undefined; })();
+  useEffect(() => {
+    if (myLostLimbs == null) { lostLimbsRef.current = null; return; }
+    if (lostLimbsRef.current != null && myLostLimbs > lostLimbsRef.current) setDamageFlash((value) => value + 1);
+    lostLimbsRef.current = myLostLimbs;
+  }, [myLostLimbs]);
+  /** Нажатие действует только внутри того же хода: после смены фазы или раунда подсветка сама сбрасывается. */
+  const turnStamp = `${room?.save?.phase ?? ""}:${room?.save?.session.round ?? ""}:${room?.save?.activeHuman ?? ""}`;
+  const pressed = pressedState && pressedState.stamp === turnStamp ? pressedState.key : null;
+  /** Короткая визуальная пауза после нажатия, чтобы кнопка успела «отозваться» до смены экрана. */
+  const press = (key: string, action: () => void) => { if (pressed) return; setPressedState({ key, stamp: turnStamp }); window.setTimeout(() => { setPressedState(null); action(); }, 180); };
 
   const applyHostCommand = useCallback((command: RoomCommand, sourceClientId: string) => {
     setRoom((current) => current ? reduceRoom(current, command, sourceClientId) : current);
@@ -907,14 +921,15 @@ export function ExpeditionConsole() {
   const goalProgress = myPlayer?.roleId === "mag" ? `${myStats.tunnels}/15 тоннелей` : myPlayer?.roleId === "scientist" ? `${myStats.knowledge.length}/3 знания` : myPlayer?.roleId === "medic" ? `${myStats.healed}/2 лечений` : "выполняется решениями игрока";
 
   return <main className="solo-shell expedition-shell">
+    {damageFlash > 0 && <div key={damageFlash} className="damage-flash" aria-hidden="true"/>}
     <header className="solo-header"><div><span>Раунд {save.session.round}</span><b>{save.session.time}</b><i>{save.activeHuman + 1}/{save.humanIds.length} ход человека</i></div><strong>Комната {room.code}</strong><a href="./">Режимы</a></header>
     {connectionStatus === "error" && !isHost && <div className="expedition-connection-alert"><span>{connectionError || "Связь с создателем потеряна."}</span><button onClick={reconnectRoom}>Переподключиться</button></div>}
     <div className="solo-layout">
-      <MetroNetworkMap state={save.session} focusIds={save.session.players.map((player) => player.position)} compact={false}/>
+      <section className="solo-map"><MetroNetworkMap state={save.session} focusIds={save.session.players.map((player) => player.position)} compact={false}/>{canAct && save.phase === "planning" && <section className="solo-action pixel-panel"><p className="pixel-kicker">Ваше решение</p><button className={pressed === "stay" ? "pressed" : undefined} disabled={pressed != null} onClick={() => press("stay", () => sendCommand({ type: "choose", target: null }))}><b>Остаться</b><span>Получить ресурс станции</span></button>{neighbors.map(({ edge, target, status }) => { const node = nodeById.get(target); return <button key={`${edge.id}-${target}`} className={pressed === `${edge.id}-${target}` ? "pressed" : undefined} disabled={pressed != null} onClick={() => press(`${edge.id}-${target}`, () => sendCommand({ type: "choose", target, edgeId: edge.id }))}><b>Идти → <i className="route-station-chip" style={{ borderColor: node?.color }}>{node?.name}</i></b><span>{status === "caravan" ? "🐫 Караван: испытания не будет" : edge.type === "transfer" ? `Кордон · выбор оплаты или шмона` : node?.lineName}</span></button>; })}</section>}</section>
       <aside className="solo-command">
-        <section className="solo-human pixel-panel"><RolePortrait roleId={current.roleId}/><div><small>{canAct ? "Ваш ход" : "Сейчас ходит"}</small><h1>{current.name}</h1><p>{role?.name} · {nodeById.get(current.position)?.name}</p><span>{current.bullets} ◉ · {Math.max(0, 4 - current.lostLimbs.length)}/4 конечности</span></div></section>
+        <section className="solo-human pixel-panel"><RolePortrait roleId={current.roleId} health={healthRatio(current)}/><div><small>{canAct ? "Ваш ход" : "Сейчас ходит"}</small><h1>{current.name}</h1><p>{role?.name} · {nodeById.get(current.position)?.name}</p><span>{current.bullets} ◉ · {Math.max(0, 4 - current.lostLimbs.length)}/4 конечности</span></div></section>
         {!canAct && save.phase !== "summary" && save.phase !== "finished" && <section className="expedition-turn-wait pixel-panel"><i/><p><b>Ждём решение игрока</b><span>{activeMember?.connected === false ? "Игрок потерял соединение. Создатель может пропустить ход или передать персонажа боту." : "Карта обновится автоматически после его хода."}</span>{isHost && activeMember?.connected === false && <em><button onClick={() => sendCommand({ type: "skip-disconnected" })}>Пропустить ход</button><button onClick={() => sendCommand({ type: "bot-takeover", playerId: current.id })}>Передать боту</button></em>}</p></section>}
-        {canAct && save.phase === "planning" && <section className="solo-action pixel-panel"><p className="pixel-kicker">Ваше решение</p><button onClick={() => sendCommand({ type: "choose", target: null })}><b>Остаться</b><span>Получить ресурс станции</span></button>{neighbors.map(({ edge, target, status }) => { const node = nodeById.get(target); return <button key={`${edge.id}-${target}`} onClick={() => sendCommand({ type: "choose", target, edgeId: edge.id })}><b>Идти → <i className="route-station-chip" style={{ borderColor: node?.color }}>{node?.name}</i></b><span>{status === "caravan" ? "🐫 Караван: испытания не будет" : edge.type === "transfer" ? `Кордон · выбор оплаты или шмона` : node?.lineName}</span></button>; })}</section>}
+        
         {canAct && save.phase === "cordon" && cordonProfile && <section className="solo-cordon pixel-panel"><span>Межлинейный переход</span><h2>{cordonProfile.title}</h2><p>{cordonProfile.guardText}</p><strong>{cordonProfile.inspection ? "Этот пост проводит шмон вместо обычной пошлины. Подозрительный предмет потребует доплаты." : "Этот пост берёт фиксированную пошлину и не проводит досмотр."}</strong>{cordonProfile.inspection ? <button disabled={current.bullets < (inspectionItem?.risk || 0)} onClick={() => sendCommand({ type: "resolve-cordon", mode: "inspection" })}>Пройти шмон · возможная доплата {inspectionItem?.risk || 0} ◉</button> : <button disabled={current.bullets < cordonToll} onClick={() => sendCommand({ type: "resolve-cordon", mode: "pay" })}>Заплатить {cordonToll} ◉ · без досмотра</button>}<button disabled={!current.inventory.includes("pass")} onClick={() => sendCommand({ type: "resolve-cordon", mode: "pass" })}>Предъявить разовый пропуск</button><button onClick={() => sendCommand({ type: "resolve-cordon", mode: "retreat" })}>Отступить на станцию</button></section>}
         {canAct && save.phase === "challenge" && currentChallenge && <section className="solo-challenge pixel-panel"><span>{currentChallenge.category}</span><h2>{currentChallenge.title}</h2><p>{currentChallenge.scene}</p><strong>{currentChallenge.question}</strong><div className="solo-solutions">{options.map((option) => { const usable = !option.itemIds?.length || option.itemIds.some((id) => current.inventory.includes(id)); const risk = option.outcome === "risk" ? "Высокий риск · 48% провала" : option.itemIds?.length ? "Низкий риск · 18% провала" : option.bulletCost ? "Очень низкий риск · 12% провала" : option.outcome === "retreat" ? "Без риска · ход потерян" : "Средний риск · 30% провала"; return <button key={option.id} disabled={!usable || Boolean(option.bulletCost && current.bullets < option.bulletCost)} onClick={() => sendCommand({ type: "resolve", optionId: option.id })}><b>{option.label}</b><span>{option.detail}</span><small>{option.bulletCost ? `${option.bulletCost} ◉ · ` : ""}{risk}</small></button>; })}</div></section>}
         {save.phase === "summary" && <section className="solo-report pixel-panel"><p className="pixel-kicker">Итоги раунда {save.session.round}</p>{save.report.map((line, index) => <p key={index}>{line}</p>)}{isHost ? <button className="pixel-primary" onClick={() => sendCommand({ type: "next-round" })}>Следующий раунд →</button> : <div className="expedition-wait-host"><i/><span>Создатель откроет следующий раунд</span></div>}</section>}
