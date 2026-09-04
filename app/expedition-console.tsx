@@ -367,6 +367,10 @@ export function ExpeditionConsole() {
         const command = data as RoomCommand;
         if (command?.type) applyHostCommand(command, sourceClientId);
       });
+      connection.on("error", () => {
+        guestConnectionsRef.current.delete(connection.connectionId);
+        applyHostCommand({ type: "disconnect" }, sourceClientId);
+      });
       connection.on("close", () => {
         guestConnectionsRef.current.delete(connection.connectionId);
         applyHostCommand({ type: "disconnect" }, sourceClientId);
@@ -390,7 +394,10 @@ export function ExpeditionConsole() {
     const peer = new Peer({ debug: 1 });
     peerRef.current = peer;
     peer.on("open", () => {
-      const connection = peer.connect(roomPeerId(code), { reliable: true, serialization: "json", metadata: { clientId } });
+      // A started expedition is much larger than PeerJS' 16 KB JSON-message
+      // limit. Binary serialization automatically chunks the shared room, so
+      // the game state continues to reach every computer after the lobby.
+      const connection = peer.connect(roomPeerId(code), { reliable: true, serialization: "binary", metadata: { clientId } });
       hostConnectionRef.current = connection;
       connection.on("open", () => {
         connection.send({ type: "join", member: newLobbyMember(clientId, profile.name || "Путник", profile.roleId, profile.start) } satisfies RoomCommand);
