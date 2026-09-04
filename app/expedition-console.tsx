@@ -315,7 +315,7 @@ function finishTurn(baseInput: ExpeditionSave, outcome: Outcome): ExpeditionSave
   }
   if (outcome.reward) {
     player.inventory.push(outcome.reward);
-    report.push(`Караван передал: ${itemNames[outcome.reward] || outcome.reward}.`);
+    report.push(`Получен предмет: ${itemNames[outcome.reward] || outcome.reward}.`);
   }
   const draft = { ...base, session, traversals, finishers, stats, roleUses, report };
   const nextHuman = base.humanIds.findIndex((id, index) => index > base.activeHuman && !base.botControlledIds.includes(id) && !isOut(draft, session.players[id - 1]));
@@ -871,7 +871,9 @@ export function ExpeditionConsole() {
   const inspectionItem = current.inventory.map((item) => ({ item, risk: itemInspectionRisk[item] || 0 })).sort((a, b) => b.risk - a.risk)[0];
   const roleEdges = myPlayer ? edges.filter((edge) => edge.source === myPlayer.position || edge.target === myPlayer.position).filter((edge) => {
     const status = edgeStatus(save.session, edge, myPlayer.position);
-    return myPlayer.roleId === "mag" ? status === "unknown" : myPlayer.roleId === "trackman" ? status === "closed" || status === "unknown" : false;
+    return myPlayer.roleId === "mag"
+      ? (["Вечер", "Ночь"] as SessionTime[]).includes(save.session.time) && status === "unknown"
+      : myPlayer.roleId === "trackman" ? status === "closed" || status === "unknown" : false;
   }) : [];
   const goalProgress = myPlayer?.roleId === "mag" ? `${myStats.tunnels}/15 тоннелей` : myPlayer?.roleId === "scientist" ? `${myStats.knowledge.length}/3 знания` : myPlayer?.roleId === "medic" ? `${myStats.healed}/2 лечений` : "выполняется решениями игрока";
 
