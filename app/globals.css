@@ -127,8 +127,8 @@ body{font-size:16px;line-height:1.45}button,input,select,textarea{font-size:14px
 .network-track,.network-transfer{pointer-events:none}.network-track{stroke-linejoin:round}
 /* Свечение безопасных тоннелей: слои подложки в цвете линии и светлое ядро, ширина не зависит от масштаба. */
 .network-track-glow,.network-track-core{fill:none;vector-effect:non-scaling-stroke;stroke-linecap:round;stroke-linejoin:round;pointer-events:none}
-.network-track-glow.wide{stroke-width:22;opacity:.15}
-.network-track-glow.near{stroke-width:11;opacity:.32}
+.network-track-glow.wide{stroke-width:calc(22px * var(--glow,1));opacity:.15}
+.network-track-glow.near{stroke-width:calc(11px * var(--glow,1));opacity:.32}
 .network-track-core{stroke:#fff8e6;stroke-width:1.4;opacity:.55}
 .net-track-group.selected .network-track,.net-track-group.selected .network-transfer{filter:drop-shadow(0 0 4px #e5f77b);opacity:1!important}
 .net-station-hit{fill:transparent;stroke:none;pointer-events:all}
@@ -204,3 +204,38 @@ body{font-size:16px;line-height:1.45}button,input,select,textarea{font-size:14px
 .map-legend-body span{color:#cbd4cd;font-size:11px;line-height:1.3}
 .map-legend-emoji{display:block;font-size:13px;font-style:normal;text-align:center}
 @media(max-width:760px){.map-legend{top:126px;width:190px}.map-legend-body{max-height:34vh}.network-map-hint{display:none}}
+/* Список открытых комнат на экране входа в «Люди и боты». */
+.expedition-rooms{display:grid;gap:8px;padding:14px;border:1px solid #3d4a42;background:#0c130f}
+.expedition-rooms-head{display:flex;align-items:center;gap:9px;color:#859188;font:800 11px ui-monospace,monospace;letter-spacing:.09em;text-transform:uppercase}
+.expedition-rooms-head i{width:8px;height:8px;background:#5d6b62}.expedition-rooms-head i.online{background:var(--px-acid);box-shadow:0 0 12px rgba(215,239,83,.7)}.expedition-rooms-head i.offline{background:#c85a4a}.expedition-rooms-head i.connecting{animation:rooms-pulse 1s ease-in-out infinite}.expedition-rooms-head b{margin-left:auto;color:#d6ddd8}
+@keyframes rooms-pulse{0%,100%{opacity:.3}50%{opacity:1}}
+.expedition-rooms-empty{margin:2px 0 4px;color:#93a097;font-size:13px;line-height:1.45}
+.expedition-room{display:grid;grid-template-columns:1fr auto;column-gap:12px;row-gap:3px;width:100%;padding:12px 14px;text-align:left;border:2px solid #55645b;background:#121b15;color:#eef3ea;cursor:pointer;transition:border-color .12s ease,background .12s ease,transform .12s ease}
+.expedition-room b{font-size:16px;line-height:1.2}.expedition-room span{color:#98a59d;font-size:12px}.expedition-room small{grid-column:2;grid-row:1;color:var(--px-acid);font:800 10px ui-monospace,monospace;letter-spacing:.08em;text-transform:uppercase}.expedition-room em{grid-column:2;grid-row:2;color:#6f7d74;font:800 11px ui-monospace,monospace;font-style:normal;letter-spacing:.18em;text-align:right}
+.expedition-room:hover:not(:disabled){border-color:var(--px-acid);background:#1a2a1e;transform:translateY(-1px)}.expedition-room:active:not(:disabled){transform:translateY(1px)}
+.expedition-room:disabled{cursor:default;opacity:.55}.expedition-room.playing small{color:#c9a86a}
+.expedition-code-link{justify-self:start;margin-top:2px;padding:4px 0;border:0;background:transparent;color:#859188;font-size:12px;text-decoration:underline;text-underline-offset:3px;cursor:pointer}.expedition-code-link:hover{color:#d6ddd8}
+.expedition-room-pick{display:grid;grid-template-columns:1fr auto;row-gap:3px;padding:12px 14px;border:1px solid var(--px-acid);background:#1a2a1e}.expedition-room-pick b{font-size:16px}.expedition-room-pick span{color:#98a59d;font-size:12px}.expedition-room-pick em{grid-column:2;grid-row:1/3;align-self:center;color:var(--px-acid);font:900 18px ui-monospace,monospace;font-style:normal;letter-spacing:.2em}
+/* Окно гибели персонажа. */
+.death-modal{position:fixed;inset:0;z-index:70;display:grid;place-items:center;padding:24px;background:radial-gradient(circle at center,rgba(8,4,4,.72) 0,rgba(4,2,2,.94) 70%);box-shadow:inset 0 0 160px 40px rgba(150,20,20,.45);backdrop-filter:blur(3px);animation:death-fade .45s ease-out}
+.death-backdrop{position:absolute;inset:0;border:0;padding:0;background:transparent;cursor:default}
+.death-card{position:relative;z-index:1;width:min(560px,100%);padding:34px 34px 28px;border:1px solid #7a3a30;background:linear-gradient(180deg,#160b0b 0,#0b0d0b 60%);box-shadow:10px 10px 0 #050303,0 0 60px rgba(180,40,30,.25);text-align:center;animation:death-rise .55s cubic-bezier(.2,.8,.2,1)}
+.death-card:before,.death-card:after{content:"";position:absolute;width:14px;height:14px;border:2px solid #c9503c}.death-card:before{top:-2px;left:-2px;border-right:0;border-bottom:0}.death-card:after{right:-2px;bottom:-2px;border-left:0;border-top:0}
+.death-portrait{position:relative;width:118px;height:150px;margin:0 auto 18px}.death-portrait .role-portrait{width:100%;height:100%;border:2px solid #7a3a30;filter:grayscale(.85) contrast(1.15) brightness(.8);box-shadow:0 0 34px rgba(200,50,40,.35)}.death-portrait i{position:absolute;inset:0;background:linear-gradient(180deg,transparent 55%,rgba(11,13,11,.9));pointer-events:none}
+.death-kicker{margin:0;color:#e0604a;font:900 11px ui-monospace,monospace;letter-spacing:.22em;text-transform:uppercase}
+.death-card h2{margin:8px 0 6px;color:#f4ece6;font-size:clamp(30px,5vw,44px);line-height:.95;letter-spacing:-.02em;text-transform:uppercase}
+.death-role{margin:0 0 18px;color:#9c8f88;font-size:14px}.death-role b{color:#e7d9d0}
+.death-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:0 0 16px}.death-stats div{display:grid;gap:3px;padding:10px 6px;border:1px solid #3d2a27;background:rgba(255,255,255,.02)}.death-stats b{color:#f1e3d6;font:900 22px/1 ui-monospace,monospace}.death-stats span{color:#8d7f79;font-size:10px;letter-spacing:.08em;text-transform:uppercase}
+.death-lines{margin:0 0 14px;padding:10px 14px;border-left:2px solid #7a3a30;text-align:left}.death-lines p{margin:0;padding:4px 0;color:#c4b6ae;font-size:13px;line-height:1.4}.death-lines p:first-child{color:#f0d9cf;font-weight:700}
+.death-epitaph{margin:0 0 20px;color:#7f746f;font-size:13px;font-style:italic;line-height:1.5}
+.death-actions{display:grid;gap:10px}.death-actions .pixel-primary{display:flex;justify-content:space-between;width:100%;padding:15px 18px;border-color:#e0604a;background:#e0604a;color:#160b0b}.death-actions .pixel-primary:hover{background:#f07a64;border-color:#f07a64}
+.death-dismiss{padding:11px;border:1px solid #4a3733;background:transparent;color:#a89a93;font-size:13px;cursor:pointer}.death-dismiss:hover{border-color:#8a5a50;color:#e7d9d0}
+@keyframes death-fade{from{opacity:0}to{opacity:1}}@keyframes death-rise{from{opacity:0;transform:translateY(26px) scale(.96)}to{opacity:1;transform:none}}
+@media(max-width:560px){.death-card{padding:24px 18px 20px}.death-stats{grid-template-columns:repeat(2,1fr)}}
+/* Иконка Полиса в центре узла из четырёх станций. */
+.polis-mark{pointer-events:none}
+.polis-halo{fill:rgba(215,239,83,.14);filter:blur(6px);animation:polis-breathe 3.2s ease-in-out infinite}
+.polis-ring{fill:rgba(9,15,11,.92);stroke:var(--px-acid);stroke-width:1.2;vector-effect:non-scaling-stroke;stroke-dasharray:3 2.2}
+.polis-roof{fill:#f3f0d9;stroke:#0b120e;stroke-width:.5}.polis-column{fill:#e6e1c2}.polis-base{fill:#f3f0d9}
+.polis-label{fill:#f7f4e8;stroke:#050905;stroke-width:1.8px;paint-order:stroke;font:900 6.5px ui-monospace,monospace;letter-spacing:.2em;text-anchor:middle}
+@keyframes polis-breathe{0%,100%{opacity:.7}50%{opacity:1}}

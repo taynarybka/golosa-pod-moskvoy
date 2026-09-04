@@ -1,10 +1,11 @@
 "use client";
 
-import mqtt, { type MqttClient } from "mqtt";
+import type { MqttClient } from "mqtt";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { activeCaravansForRound } from "./caravan-data";
 import { challengeCards } from "./card-data";
 import { challengeSolutions, type ChallengeOption } from "./challenge-solutions";
+import { DeathModal } from "./death-modal";
 import { cordonRules, getCordonProfile, itemInspectionRisk, npcCards, roleCards } from "./game-data";
 import { metroData } from "./metro-data";
 import { healthRatio, MetroNetworkMap, RolePortrait } from "./network-console";
@@ -97,6 +98,21 @@ const roomNamespace = (code: string) => {
 };
 const roomTopic = (code: string, channel: "state" | "command") => `golosa-pod-moskvoy/v5/${roomNamespace(code)}/${channel}`;
 const mqttId = () => `golosa_${Math.random().toString(36).slice(2, 17)}`;
+/** MQTT нужен только в браузере: серверный рендер не умеет импортировать его Node-зависимости, поэтому модуль грузится лениво. */
+const loadMqtt = () => import("mqtt").then((module) => module.default ?? module);
+/** Каталог открытых комнат: хост держит здесь retained-запись, экран входа подписывается на `rooms/+`. */
+const roomsDirectoryTopic = "golosa-pod-moskvoy/v5/rooms";
+const roomListingTopic = (code: string) => `${roomsDirectoryTopic}/${code.toUpperCase()}`;
+type RoomListing = { code: string; hostName: string; members: number; status: SharedRoom["status"]; updatedAt: number };
+const listingTtl = 20000;
+const listingFor = (room: SharedRoom): RoomListing => ({
+  code: room.code,
+  hostName: room.members.find((member) => member.clientId === room.hostClientId)?.name || "Создатель партии",
+  members: room.members.filter((member) => member.connected).length,
+  status: room.status,
+  updatedAt: Date.now(),
+});
+const memberWord = (count: number) => count % 10 === 1 && count % 100 !== 11 ? "путник" : count % 10 >= 2 && count % 10 <= 4 && (count % 100 < 10 || count % 100 >= 20) ? "путника" : "путников";
 
 function edgeStatus(session: NetworkSession, edge: MetroEdge, position: string) {
   if (edge.type === "transfer") return "cordon";
@@ -619,7 +635,8 @@ function normalizeRoom(room: SharedRoom): SharedRoom {
 }
 
 export function ExpeditionConsole() {
-  const [clientId] = useState(() => sessionStorage.getItem("golosa-client-id") || makeClientId());
+  // На сервере хранилища нет: там достаточно временного id, в браузере инициализатор выполнится заново.
+  const [clientId] = useState(() => (typeof sessionStorage === "undefined" ? null : sessionStorage.getItem("golosa-client-id")) || makeClientId());
   const brokerRef = useRef<MqttClient | null>(null);
   const connectionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [room, setRoom] = useState<SharedRoom | null>(null);
@@ -627,6 +644,9 @@ export function ExpeditionConsole() {
   const [connectionError, setConnectionError] = useState("");
   const [entryMode, setEntryMode] = useState<"choice" | "create" | "join">("choice");
   const [joinCode, setJoinCode] = useState("");
+  const [selectedRoom, setSelectedRoom] = useState<RoomListing | null>(null);
+  const [rooms, setRooms] = useState<Record<string, RoomListing & { seenAt: number }>>({});
+  const [roomsStatus, setRoomsStatus] = useState<"connecting" | "online" | "offline">("connecting");
   const [profile, setProfile] = useState<SetupPlayer>({ name: "", roleId: roleCards[0].id, start: starts[0] });
   const [restorableRoom] = useState<SharedRoom | null>(() => {
     try {
@@ -647,6 +667,7 @@ export function ExpeditionConsole() {
     };
   }, [clientId]);
   const [pressedState, setPressedState] = useState<{ key: string; stamp: string } | null>(null);
+  const [deathSeen, setDeathSeen] = useState<string | null>(null);
   const [damageFlash, setDamageFlash] = useState(0);
   const lostLimbsRef = useRef<number | null>(null);
   const myLostLimbs = (() => { const playerId = room?.playerByClient[clientId]; return playerId && room?.save ? room.save.session.players[playerId - 1]?.lostLimbs.length : undefined; })();
@@ -661,6 +682,47 @@ export function ExpeditionConsole() {
   /** Короткая визуальная пауза после нажатия, чтобы кнопка успела «отозваться» до смены экрана. */
   const press = (key: string, action: () => void) => { if (pressed) return; setPressedState({ key, stamp: turnStamp }); window.setTimeout(() => { setPressedState(null); action(); }, 180); };
 
+  const inRoom = room !== null;
+  useEffect(() => {
+    if (inRoom) return;
+    let broker: MqttClient | null = null;
+    let cancelled = false;
+    void loadMqtt().then((mqtt) => {
+    if (cancelled) return;
+    const client = mqtt.connect(brokerUrl, { clientId: mqttId(), clean: true, reconnectPeriod: 3000, connectTimeout: 10000, protocolVersion: 4 });
+    broker = client;
+    client.on("connect", () => {
+      client.subscribe(`${roomsDirectoryTopic}/+`, { qos: 1 }, (error) => setRoomsStatus(error ? "offline" : "online"));
+    });
+    client.on("message", (topic, payload) => {
+      if (!topic.startsWith(`${roomsDirectoryTopic}/`)) return;
+      const code = topic.slice(roomsDirectoryTopic.length + 1);
+      const text = payload.toString();
+      if (!text) {
+        setRooms((current) => { if (!(code in current)) return current; const next = { ...current }; delete next[code]; return next; });
+        return;
+      }
+      try {
+        const listing = JSON.parse(text) as RoomListing;
+        if (listing.code !== code || typeof listing.updatedAt !== "number") return;
+        // Запись старше трёх минут — хост давно пропал, а will не сработал.
+        if (Date.now() - listing.updatedAt > 180000) return;
+        setRooms((current) => ({ ...current, [code]: { ...listing, seenAt: Date.now() } }));
+      } catch { /* Чужой трафик на публичном брокере. */ }
+    });
+    client.on("offline", () => setRoomsStatus("offline"));
+    client.on("error", () => setRoomsStatus("offline"));
+    }).catch(() => setRoomsStatus("offline"));
+    const prune = setInterval(() => {
+      const now = Date.now();
+      setRooms((current) => {
+        const alive = Object.fromEntries(Object.entries(current).filter(([, entry]) => now - entry.seenAt < listingTtl));
+        return Object.keys(alive).length === Object.keys(current).length ? current : alive;
+      });
+    }, 5000);
+    return () => { cancelled = true; clearInterval(prune); broker?.end(true); };
+  }, [inRoom]);
+
   const applyHostCommand = useCallback((command: RoomCommand, sourceClientId: string) => {
     setRoom((current) => current ? reduceRoom(current, command, sourceClientId) : current);
   }, []);
@@ -670,16 +732,23 @@ export function ExpeditionConsole() {
     localStorage.setItem(hostStorageKey, JSON.stringify(room));
     const publish = () => {
       const broker = brokerRef.current;
-      if (broker?.connected) broker.publish(roomTopic(room.code, "state"), JSON.stringify({ type: "state", room, sentAt: Date.now() }), { qos: 1, retain: true });
+      if (!broker?.connected) return;
+      broker.publish(roomTopic(room.code, "state"), JSON.stringify({ type: "state", room, sentAt: Date.now() }), { qos: 1, retain: true });
+      broker.publish(roomListingTopic(room.code), JSON.stringify(listingFor(room)), { qos: 1, retain: true });
     };
     publish();
     const heartbeat = setInterval(publish, 5000);
-    return () => clearInterval(heartbeat);
+    // При закрытии вкладки сразу убираем комнату из каталога, не дожидаясь will брокера.
+    const onPageHide = () => { const broker = brokerRef.current; if (broker?.connected) broker.publish(roomListingTopic(room.code), "", { qos: 1, retain: true }); };
+    window.addEventListener("pagehide", onPageHide);
+    return () => { clearInterval(heartbeat); window.removeEventListener("pagehide", onPageHide); };
   }, [clientId, room]);
 
   const destroyConnection = () => {
     if (connectionTimeoutRef.current) clearTimeout(connectionTimeoutRef.current);
     connectionTimeoutRef.current = null;
+    const broker = brokerRef.current;
+    if (broker?.connected && room && room.hostClientId === clientId) broker.publish(roomListingTopic(room.code), "", { qos: 1, retain: true });
     brokerRef.current?.end(true);
     brokerRef.current = null;
   };
@@ -700,7 +769,11 @@ export function ExpeditionConsole() {
   };
 
   const openHostBroker = (code: string, initialRoom: SharedRoom) => {
-    const broker = mqtt.connect(brokerUrl, { clientId: mqttId(), clean: true, reconnectPeriod: 2000, connectTimeout: 10000, protocolVersion: 4 });
+    void loadMqtt().then((mqtt) => {
+    const broker = mqtt.connect(brokerUrl, {
+      clientId: mqttId(), clean: true, reconnectPeriod: 2000, connectTimeout: 10000, protocolVersion: 4,
+      will: { topic: roomListingTopic(code), payload: "", qos: 1, retain: true },
+    });
     brokerRef.current = broker;
     broker.on("connect", () => {
       broker.subscribe(roomTopic(code, "command"), { qos: 1 }, (error) => {
@@ -731,6 +804,7 @@ export function ExpeditionConsole() {
       setConnectionStatus("error");
       setConnectionError("Сервер комнат временно недоступен. Игра попробует подключиться снова.");
     });
+    }).catch(() => { setConnectionStatus("error"); setConnectionError("Не удалось загрузить модуль связи. Обновите страницу."); });
   };
 
   const createRoom = () => {
@@ -773,6 +847,7 @@ export function ExpeditionConsole() {
     setConnectionStatus("connecting");
     setConnectionError("");
     armConnectionTimeout("Не удалось связаться с компьютером создателя. Оставьте комнату открытой у создателя и попробуйте снова.");
+    void loadMqtt().then((mqtt) => {
     const broker = mqtt.connect(brokerUrl, {
       clientId: mqttId(), clean: true, reconnectPeriod: 2000, connectTimeout: 10000, protocolVersion: 4,
       will: { topic: roomTopic(code, "command"), payload: JSON.stringify({ sourceClientId: clientId, command: { type: "disconnect" } }), qos: 1, retain: false },
@@ -814,6 +889,7 @@ export function ExpeditionConsole() {
       setConnectionStatus("error");
       setConnectionError("Не удалось подключиться к серверу комнат.");
     });
+    }).catch(() => { setConnectionStatus("error"); setConnectionError("Не удалось загрузить модуль связи. Обновите страницу."); });
   };
 
   const joinRoom = () => connectGuest(joinCode, profile);
@@ -834,12 +910,13 @@ export function ExpeditionConsole() {
   };
 
   if (!room) {
+    const roomList = Object.values(rooms).sort((a, b) => (a.status === b.status ? b.updatedAt - a.updatedAt : a.status === "lobby" ? -1 : 1));
     return <main className="expedition-entry">
       <a href="./" className="solo-back">← Три режима</a>
       <section className="expedition-entry-hero">
         <p className="pixel-kicker">Режим 02 · сетевая партия</p>
         <h1>Спускайтесь<br/><span>с разных компьютеров</span></h1>
-        <p>Один человек создаёт комнату и получает код. Остальные входят по этому коду. Когда в лобби соберутся хотя бы двое, создатель запускает экспедицию — свободные роли займут боты.</p>
+        <p>Один человек создаёт комнату, и она появляется в списке у всех. Остальные входят в неё одним нажатием. Когда в лобби соберутся хотя бы двое, создатель запускает экспедицию — свободные роли займут боты.</p>
         <div className="expedition-network-note"><i/>Сервер комнат · без регистрации</div>
       </section>
       <section className="expedition-entry-panel pixel-panel">
@@ -847,16 +924,27 @@ export function ExpeditionConsole() {
           <p className="pixel-kicker">Как войти?</p>
           <h2>Собрать компанию</h2>
           <button className="pixel-primary" onClick={() => setEntryMode("create")}><span>Создать новую партию</span><b>→</b></button>
-          <button onClick={() => setEntryMode("join")}><span>Войти по коду</span><b>⌁</b></button>
+          <div className="expedition-rooms">
+            <div className="expedition-rooms-head"><span>Открытые комнаты</span><i className={roomsStatus}/><b>{roomsStatus === "online" ? roomList.length : roomsStatus === "connecting" ? "ищем…" : "нет связи"}</b></div>
+            {roomList.length === 0 && <p className="expedition-rooms-empty">{roomsStatus === "online" ? "Пока никто не открыл комнату. Создайте свою — друзья увидят её здесь." : roomsStatus === "connecting" ? "Подключаемся к серверу комнат…" : "Сервер комнат недоступен. Проверьте интернет или введите код вручную."}</p>}
+            {roomList.map((entry) => <button key={entry.code} type="button" className={`expedition-room ${entry.status}`} disabled={entry.status !== "lobby"} onClick={() => { setSelectedRoom(entry); setJoinCode(entry.code); setEntryMode("join"); setConnectionError(""); }}>
+              <b>{entry.hostName}</b>
+              <span>{entry.members} {memberWord(entry.members)}</span>
+              <small>{entry.status === "lobby" ? "Идёт набор" : "Уже в пути"}</small>
+              <em>{entry.code}</em>
+            </button>)}
+            <button type="button" className="expedition-code-link" onClick={() => { setSelectedRoom(null); setJoinCode(""); setEntryMode("join"); setConnectionError(""); }}>Ввести код вручную</button>
+          </div>
           {restorableRoom && <button className="expedition-restore" onClick={restoreHostRoom}><span>Восстановить комнату {restorableRoom.code}</span><b>↻</b></button>}
           {!restorableRoom && guestResume && <button className="expedition-restore" onClick={() => connectGuest(guestResume.code, guestResume.profile)}><span>Вернуться в комнату {guestResume.code}</span><b>↻</b></button>}
         </>}
         {entryMode !== "choice" && <>
-          <button className="expedition-entry-back" onClick={() => { setEntryMode("choice"); setConnectionError(""); }}>← Назад</button>
-          <p className="pixel-kicker">{entryMode === "create" ? "Новая комната" : "Приглашение"}</p>
-          <h2>{entryMode === "create" ? "Представьтесь" : "Войти к друзьям"}</h2>
+          <button className="expedition-entry-back" onClick={() => { setEntryMode("choice"); setSelectedRoom(null); setConnectionError(""); }}>← Назад</button>
+          <p className="pixel-kicker">{entryMode === "create" ? "Новая комната" : selectedRoom ? "Комната из списка" : "Приглашение"}</p>
+          <h2>{entryMode === "create" ? "Представьтесь" : selectedRoom ? `Комната · ${selectedRoom.hostName}` : "Войти к друзьям"}</h2>
+          {entryMode === "join" && selectedRoom && <div className="expedition-room-pick"><b>{selectedRoom.hostName}</b><span>{selectedRoom.members} {memberWord(selectedRoom.members)} · идёт набор</span><em>{selectedRoom.code}</em></div>}
           <label>Имя<input value={profile.name} maxLength={24} placeholder="Как вас называть?" onChange={(event) => setProfile((current) => ({ ...current, name: event.target.value }))}/></label>
-          {entryMode === "join" && <label>Код комнаты<input className="expedition-code-input" value={joinCode} maxLength={6} placeholder="A7K2MP" onChange={(event) => setJoinCode(event.target.value.toUpperCase())}/></label>}
+          {entryMode === "join" && !selectedRoom && <label>Код комнаты<input className="expedition-code-input" value={joinCode} maxLength={6} placeholder="A7K2MP" onChange={(event) => setJoinCode(event.target.value.toUpperCase())}/></label>}
           <button className="pixel-primary" disabled={connectionStatus === "connecting"} onClick={entryMode === "create" ? createRoom : joinRoom}>
             <span>{connectionStatus === "connecting" ? "Соединяем…" : entryMode === "create" ? "Создать комнату" : "Войти в комнату"}</span><b>→</b>
           </button>
@@ -929,8 +1017,10 @@ export function ExpeditionConsole() {
   }) : [];
   const goalProgress = myPlayer?.roleId === "mag" ? `${myStats.tunnels}/15 тоннелей` : myPlayer?.roleId === "scientist" ? `${myStats.knowledge.length}/3 знания` : myPlayer?.roleId === "medic" ? `${myStats.healed}/2 лечений` : "выполняется решениями игрока";
 
+  const deathKey = `${room.code}:${myPlayer?.id ?? 0}`;
   return <main className="solo-shell expedition-shell">
     {damageFlash > 0 && <div key={damageFlash} className="damage-flash" aria-hidden="true"/>}
+    {myPlayer && myPlayer.lostLimbs.length >= 4 && deathSeen !== deathKey && <DeathModal name={myPlayer.name} roleName={myRole?.name || "Путник"} roleId={myPlayer.roleId} station={nodeById.get(myPlayer.position)?.name || "неизвестно"} stats={[{ label: "раундов", value: save.session.round }, { label: "патронов", value: myPlayer.bullets }, { label: "предметов", value: myPlayer.inventory.length }, { label: "живых людей", value: save.humanIds.filter((id) => !isOut(save, save.session.players[id - 1])).length }]} lines={save.report} primary={{ label: "Вернуться к режимам", onClick: () => { window.location.href = "./"; } }} onDismiss={() => setDeathSeen(deathKey)}/>}
     <header className="solo-header"><div><span>Раунд {save.session.round}</span><b>{save.session.time}</b><i>{save.activeHuman + 1}/{save.humanIds.length} ход человека</i></div><strong>Комната {room.code}</strong><a href="./">Режимы</a></header>
     {connectionStatus === "error" && !isHost && <div className="expedition-connection-alert"><span>{connectionError || "Связь с создателем потеряна."}</span><button onClick={reconnectRoom}>Переподключиться</button></div>}
     <div className="solo-layout">

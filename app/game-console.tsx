@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { layoutPosition } from "./map-layout";
 import { metroData } from "./metro-data";
 import { scenarioEdgeMarks, scenarioNpcPositions, scenarioStartBriefs, scenarioStartNodeIds, stationResources } from "./scenario-data";
 import { stationLore } from "./station-lore";
@@ -46,7 +47,7 @@ const rawNodes = metroData.nodes as readonly { id: string; name: string; lineId:
 const rawEdges = metroData.edges as readonly { id: string; source: string; target: string; type: string; lineId: string; lineName: string; color: string; closedByReality?: boolean }[];
 const WIDTH = 1200;
 const HEIGHT = 900;
-const nodes = rawNodes.map((n) => ({ ...n, x: WIDTH / 2 + (n.lng - 37.62) * 3200, y: HEIGHT / 2 + (55.75 - n.lat) * 5200 }));
+const nodes = rawNodes.map((n) => ({ ...n, ...layoutPosition(n, WIDTH, HEIGHT) }));
 const edges = rawEdges;
 const byId = new Map(nodes.map((n) => [n.id, n]));
 const bounds = {
