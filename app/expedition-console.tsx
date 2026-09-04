@@ -1,6 +1,6 @@
 "use client";
 
-import Peer, { type DataConnection } from "peerjs";
+import mqtt, { type MqttClient } from "mqtt";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { activeCaravansForRound } from "./caravan-data";
 import { challengeCards } from "./card-data";
@@ -82,23 +82,20 @@ const emptyStats = (): PlayerStats => ({ tunnels: 0, visited: [], healed: 0, kno
 const hostStorageKey = "golosa-expedition-host-room-v2";
 const guestStorageKey = "golosa-expedition-guest-room-v1";
 const roomAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-const roomPeerId = (code: string) => `golosa-pod-moskvoy-${code.toLowerCase()}`;
 const makeCode = () => Array.from({ length: 6 }, () => roomAlphabet[Math.floor(Math.random() * roomAlphabet.length)]).join("");
-const peerOptions = {
-  debug: 1,
-  config: {
-    iceServers: [
-      { urls: "stun:stun.l.google.com:19302" },
-      { urls: "stun:stun1.l.google.com:19302" },
-      { urls: "stun:openrelay.metered.ca:80" },
-      { urls: "turn:openrelay.metered.ca:80", username: "openrelayproject", credential: "openrelayproject" },
-      { urls: "turn:openrelay.metered.ca:443", username: "openrelayproject", credential: "openrelayproject" },
-      { urls: "turn:openrelay.metered.ca:443?transport=tcp", username: "openrelayproject", credential: "openrelayproject" },
-    ],
-    sdpSemantics: "unified-plan" as const,
-  },
-};
 const makeClientId = () => crypto.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+const brokerUrl = "wss://broker.emqx.io:8084/mqtt";
+const roomNamespace = (code: string) => {
+  let a = 2166136261;
+  let b = 2246822519;
+  for (const char of `golosa-room-v5:${code.toUpperCase()}`) {
+    a = Math.imul(a ^ char.charCodeAt(0), 16777619);
+    b = Math.imul(b ^ char.charCodeAt(0), 3266489917);
+  }
+  return `${(a >>> 0).toString(36)}${(b >>> 0).toString(36)}`;
+};
+const roomTopic = (code: string, channel: "state" | "command") => `golosa-pod-moskvoy/v5/${roomNamespace(code)}/${channel}`;
+const mqttId = () => `golosa_${Math.random().toString(36).slice(2, 17)}`;
 
 function edgeStatus(session: NetworkSession, edge: MetroEdge, position: string) {
   if (edge.type === "transfer") return "cordon";
@@ -614,9 +611,7 @@ function normalizeRoom(room: SharedRoom): SharedRoom {
 
 export function ExpeditionConsole() {
   const [clientId] = useState(() => sessionStorage.getItem("golosa-client-id") || makeClientId());
-  const peerRef = useRef<Peer | null>(null);
-  const hostConnectionRef = useRef<DataConnection | null>(null);
-  const guestConnectionsRef = useRef(new Map<string, DataConnection>());
+  const brokerRef = useRef<MqttClient | null>(null);
   const connectionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [room, setRoom] = useState<SharedRoom | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>("idle");
@@ -636,13 +631,10 @@ export function ExpeditionConsole() {
   });
 
   useEffect(() => {
-    const guestConnections = guestConnectionsRef.current;
     sessionStorage.setItem("golosa-client-id", clientId);
     return () => {
       if (connectionTimeoutRef.current) clearTimeout(connectionTimeoutRef.current);
-      hostConnectionRef.current?.close();
-      peerRef.current?.destroy();
-      guestConnections.clear();
+      brokerRef.current?.end(true);
     };
   }, [clientId]);
 
@@ -653,19 +645,20 @@ export function ExpeditionConsole() {
   useEffect(() => {
     if (!room || room.hostClientId !== clientId) return;
     localStorage.setItem(hostStorageKey, JSON.stringify(room));
-    guestConnectionsRef.current.forEach((connection) => {
-      if (connection.open) connection.send({ type: "state", room });
-    });
+    const publish = () => {
+      const broker = brokerRef.current;
+      if (broker?.connected) broker.publish(roomTopic(room.code, "state"), JSON.stringify({ type: "state", room, sentAt: Date.now() }), { qos: 1, retain: true });
+    };
+    publish();
+    const heartbeat = setInterval(publish, 5000);
+    return () => clearInterval(heartbeat);
   }, [clientId, room]);
 
   const destroyConnection = () => {
     if (connectionTimeoutRef.current) clearTimeout(connectionTimeoutRef.current);
     connectionTimeoutRef.current = null;
-    hostConnectionRef.current?.close();
-    hostConnectionRef.current = null;
-    peerRef.current?.destroy();
-    peerRef.current = null;
-    guestConnectionsRef.current.clear();
+    brokerRef.current?.end(true);
+    brokerRef.current = null;
   };
 
   const armConnectionTimeout = (message: string) => {
@@ -673,10 +666,8 @@ export function ExpeditionConsole() {
     connectionTimeoutRef.current = setTimeout(() => {
       setConnectionStatus("error");
       setConnectionError(message);
-      hostConnectionRef.current?.close();
-      peerRef.current?.destroy();
-      hostConnectionRef.current = null;
-      peerRef.current = null;
+      brokerRef.current?.end(true);
+      brokerRef.current = null;
     }, 15000);
   };
 
@@ -685,28 +676,37 @@ export function ExpeditionConsole() {
     connectionTimeoutRef.current = null;
   };
 
-  const bindHostPeer = (peer: Peer) => {
-    peer.on("connection", (connection) => {
-      const sourceClientId = String(connection.metadata?.clientId || connection.peer);
-      guestConnectionsRef.current.set(connection.connectionId, connection);
-      connection.on("open", () => {
-        setRoom((current) => {
-          if (current) connection.send({ type: "state", room: current });
-          return current;
-        });
+  const openHostBroker = (code: string, initialRoom: SharedRoom) => {
+    const broker = mqtt.connect(brokerUrl, { clientId: mqttId(), clean: true, reconnectPeriod: 2000, connectTimeout: 10000, protocolVersion: 4 });
+    brokerRef.current = broker;
+    broker.on("connect", () => {
+      broker.subscribe(roomTopic(code, "command"), { qos: 1 }, (error) => {
+        if (error) {
+          setConnectionStatus("error");
+          setConnectionError("Не удалось открыть канал комнаты. Попробуйте создать новую.");
+          return;
+        }
+        clearConnectionTimeout();
+        setConnectionError("");
+        setConnectionStatus("connected");
+        setRoom((current) => current || initialRoom);
       });
-      connection.on("data", (data) => {
-        const command = data as RoomCommand;
-        if (command?.type) applyHostCommand(command, sourceClientId);
-      });
-      connection.on("error", () => {
-        guestConnectionsRef.current.delete(connection.connectionId);
-        applyHostCommand({ type: "disconnect" }, sourceClientId);
-      });
-      connection.on("close", () => {
-        guestConnectionsRef.current.delete(connection.connectionId);
-        applyHostCommand({ type: "disconnect" }, sourceClientId);
-      });
+    });
+    broker.on("message", (topic, payload) => {
+      if (topic !== roomTopic(code, "command")) return;
+      try {
+        const message = JSON.parse(payload.toString()) as { sourceClientId?: string; command?: RoomCommand };
+        if (message.sourceClientId && message.command?.type) applyHostCommand(message.command, message.sourceClientId);
+      } catch { /* A public test broker can contain unrelated traffic. */ }
+    });
+    broker.on("reconnect", () => setConnectionStatus("connecting"));
+    broker.on("offline", () => {
+      setConnectionStatus("error");
+      setConnectionError("Связь с сервером комнат потеряна. Переподключаемся…");
+    });
+    broker.on("error", () => {
+      setConnectionStatus("error");
+      setConnectionError("Сервер комнат временно недоступен. Игра попробует подключиться снова.");
     });
   };
 
@@ -716,20 +716,8 @@ export function ExpeditionConsole() {
     setConnectionError("");
     armConnectionTimeout("Сервер комнат не ответил. Проверьте интернет и попробуйте создать комнату ещё раз.");
     const code = makeCode();
-    const peer = new Peer(roomPeerId(code), peerOptions);
-    peerRef.current = peer;
-    bindHostPeer(peer);
-    peer.on("open", () => {
-      clearConnectionTimeout();
-      const host = newLobbyMember(clientId, profile.name || "Создатель партии", profile.roleId, profile.start);
-      setRoom({ code, hostClientId: clientId, status: "lobby", members: [host], playerByClient: {}, save: null });
-      setConnectionStatus("connected");
-    });
-    peer.on("error", (error) => {
-      clearConnectionTimeout();
-      setConnectionStatus("error");
-      setConnectionError(error.type === "unavailable-id" ? "Такой код уже занят. Нажмите «Создать» ещё раз." : "Не удалось открыть комнату. Проверьте интернет и попробуйте снова.");
-    });
+    const host = newLobbyMember(clientId, profile.name || "Создатель партии", profile.roleId, profile.start);
+    openHostBroker(code, { code, hostClientId: clientId, status: "lobby", members: [host], playerByClient: {}, save: null });
   };
 
   const restoreHostRoom = () => {
@@ -738,29 +726,17 @@ export function ExpeditionConsole() {
     setConnectionStatus("connecting");
     setConnectionError("");
     armConnectionTimeout("Не удалось восстановить комнату. Попробуйте создать новую.");
-    const peer = new Peer(roomPeerId(restorableRoom.code), peerOptions);
-    peerRef.current = peer;
-    bindHostPeer(peer);
-    peer.on("open", () => {
-      clearConnectionTimeout();
-      const restored = normalizeRoom(restorableRoom);
-      const previousHostId = restored.hostClientId;
-      const hostPlayerId = restored.playerByClient[previousHostId];
-      const playerByClient = { ...restored.playerByClient };
-      delete playerByClient[previousHostId];
-      if (hostPlayerId) playerByClient[clientId] = hostPlayerId;
-      setRoom({
-        ...restored,
-        hostClientId: clientId,
-        playerByClient,
-        members: restored.members.map((member) => member.clientId === previousHostId ? { ...member, clientId, connected: true } : { ...member, connected: false }),
-      });
-      setConnectionStatus("connected");
-    });
-    peer.on("error", () => {
-      clearConnectionTimeout();
-      setConnectionStatus("error");
-      setConnectionError("Старая комната ещё занята. Подождите несколько секунд и повторите восстановление.");
+    const restored = normalizeRoom(restorableRoom);
+    const previousHostId = restored.hostClientId;
+    const hostPlayerId = restored.playerByClient[previousHostId];
+    const playerByClient = { ...restored.playerByClient };
+    delete playerByClient[previousHostId];
+    if (hostPlayerId) playerByClient[clientId] = hostPlayerId;
+    openHostBroker(restored.code, {
+      ...restored,
+      hostClientId: clientId,
+      playerByClient,
+      members: restored.members.map((member) => member.clientId === previousHostId ? { ...member, clientId, connected: true } : { ...member, connected: false }),
     });
   };
 
@@ -774,39 +750,46 @@ export function ExpeditionConsole() {
     setConnectionStatus("connecting");
     setConnectionError("");
     armConnectionTimeout("Не удалось связаться с компьютером создателя. Оставьте комнату открытой у создателя и попробуйте снова.");
-    const peer = new Peer(peerOptions);
-    peerRef.current = peer;
-    peer.on("open", () => {
-      // A started expedition is much larger than PeerJS' 16 KB JSON-message
-      // limit. Binary serialization automatically chunks the shared room, so
-      // the game state continues to reach every computer after the lobby.
-      const connection = peer.connect(roomPeerId(code), { reliable: true, serialization: "binary", metadata: { clientId } });
-      hostConnectionRef.current = connection;
-      connection.on("open", () => {
-        clearConnectionTimeout();
-        sessionStorage.setItem(guestStorageKey, JSON.stringify({ code, profile: memberProfile }));
-        connection.send({ type: "join", member: newLobbyMember(clientId, memberProfile.name || "Путник", memberProfile.roleId, memberProfile.start) } satisfies RoomCommand);
-        setConnectionStatus("connected");
-      });
-      connection.on("data", (data) => {
-        const message = data as { type?: string; room?: SharedRoom };
-        if (message.type === "state" && message.room) setRoom(normalizeRoom(message.room));
-      });
-      connection.on("close", () => {
-        clearConnectionTimeout();
-        setConnectionStatus("error");
-        setConnectionError("Связь с создателем партии потеряна.");
-      });
-      connection.on("error", () => {
-        clearConnectionTimeout();
-        setConnectionStatus("error");
-        setConnectionError("Не удалось войти в эту комнату.");
+    const broker = mqtt.connect(brokerUrl, {
+      clientId: mqttId(), clean: true, reconnectPeriod: 2000, connectTimeout: 10000, protocolVersion: 4,
+      will: { topic: roomTopic(code, "command"), payload: JSON.stringify({ sourceClientId: clientId, command: { type: "disconnect" } }), qos: 1, retain: false },
+    });
+    brokerRef.current = broker;
+    let joined = false;
+    const publishJoin = () => {
+      broker.publish(roomTopic(code, "command"), JSON.stringify({ sourceClientId: clientId, command: { type: "join", member: newLobbyMember(clientId, memberProfile.name || "Путник", memberProfile.roleId, memberProfile.start) } }), { qos: 1 });
+      joined = true;
+    };
+    broker.on("connect", () => {
+      broker.subscribe(roomTopic(code, "state"), { qos: 1 }, (error) => {
+        if (error) {
+          setConnectionStatus("error");
+          setConnectionError("Не удалось открыть канал комнаты.");
+          return;
+        }
+        if (!joined) publishJoin();
       });
     });
-    peer.on("error", (error) => {
-      clearConnectionTimeout();
+    broker.on("message", (topic, payload) => {
+      if (topic !== roomTopic(code, "state")) return;
+      try {
+        const message = JSON.parse(payload.toString()) as { type?: string; room?: SharedRoom };
+        if (message.type !== "state" || !message.room || message.room.code !== code) return;
+        clearConnectionTimeout();
+        sessionStorage.setItem(guestStorageKey, JSON.stringify({ code, profile: memberProfile }));
+        setRoom(normalizeRoom(message.room));
+        setConnectionStatus("connected");
+        setConnectionError("");
+      } catch { /* Ignore unrelated traffic on the public relay. */ }
+    });
+    broker.on("reconnect", () => { joined = false; setConnectionStatus("connecting"); });
+    broker.on("offline", () => {
       setConnectionStatus("error");
-      setConnectionError(error.type === "peer-unavailable" ? "Комната с таким кодом не найдена." : "Не удалось подключиться. Проверьте код и интернет.");
+      setConnectionError("Связь с сервером комнат потеряна. Переподключаемся…");
+    });
+    broker.on("error", () => {
+      setConnectionStatus("error");
+      setConnectionError("Не удалось подключиться к серверу комнат.");
     });
   };
 
@@ -820,7 +803,7 @@ export function ExpeditionConsole() {
   const isHost = room?.hostClientId === clientId;
   const sendCommand = (command: RoomCommand) => {
     if (isHost) applyHostCommand(command, clientId);
-    else if (hostConnectionRef.current?.open) hostConnectionRef.current.send(command);
+    else if (room && brokerRef.current?.connected) brokerRef.current.publish(roomTopic(room.code, "command"), JSON.stringify({ sourceClientId: clientId, command }), { qos: 1 });
   };
   const updateProfile = (patch: Partial<SetupPlayer>) => {
     setProfile((current) => ({ ...current, ...patch }));
@@ -834,7 +817,7 @@ export function ExpeditionConsole() {
         <p className="pixel-kicker">Режим 02 · сетевая партия</p>
         <h1>Спускайтесь<br/><span>с разных компьютеров</span></h1>
         <p>Один человек создаёт комнату и получает код. Остальные входят по этому коду. Когда в лобби соберутся хотя бы двое, создатель запускает экспедицию — свободные роли займут боты.</p>
-        <div className="expedition-network-note"><i/>Прямое соединение между участниками · без регистрации</div>
+        <div className="expedition-network-note"><i/>Сервер комнат · без регистрации</div>
       </section>
       <section className="expedition-entry-panel pixel-panel">
         {entryMode === "choice" && <>
