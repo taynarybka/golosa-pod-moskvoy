@@ -8,6 +8,7 @@ import { stationStories } from "./station-stories";
 import { challengeCards, itemCards, type ChallengeCard } from "./card-data";
 import { cordonChoices, cordonRules, crisisCards, getCordonProfile, npcCards, prophecyCadence, prophecyConditions, roleCards, startCordonBalance, timeRules } from "./game-data";
 import type { GmConsoleSnapshot, NetworkSession, SessionAction } from "./network-session";
+import { quietTunnelEvent, revealTunnelEvent } from "./tunnel-events";
 
 type Tab = "map" | "players" | "npc" | "wheel" | "crisis" | "death" | "log";
 type Mode = "inspect" | "npc" | "safe" | "unknown" | "closed";
@@ -28,6 +29,7 @@ type GameState = {
   npcServiceUsed: Record<string, boolean>;
   npcMoveRounds: { gm: number; role: number };
   edges: Record<string, EdgeMark>;
+  tunnelEvents: Record<string, string>;
   notes: Record<string, string>;
   swallowedStations: string[];
   blackThread: { active: boolean; everyRounds: number; lastRound: number };
@@ -159,7 +161,7 @@ const limbOptions: { id: Limb; label: string; short: string }[] = [
   { id: "rightLeg", label: "Правая нога", short: "П · нога" },
 ];
 const initialPlayers: PlayerState[] = Array.from({ length: 12 }, (_, index) => { const role = roleCards[index]; const position=scenarioStartNodeIds[Math.floor(index / 2) % scenarioStartNodeIds.length]; return { name: `Игрок ${String(index + 1).padStart(2, "0")}`, health: 10, lostLimbs: [], roleId: role.id, bullets: role.bullets+(startCordonBalance[position]?.bonusBullets||0), position }; });
-const initialState: GameState = { round: 1, activePair: 0, time: "Утро", players: initialPlayers, activePlayerCount: 4, npcPositions: initialNpcPositions, npcOwners: {}, npcServiceUsed: {}, npcMoveRounds: { gm: 0, role: -1 }, edges: initialEdges, notes: {}, swallowedStations: [], blackThread: { active: false, everyRounds: 2, lastRound: 0 }, log: ["Тестовая партия создана: 2 пары, 4 личных экрана. Утро."] };
+const initialState: GameState = { round: 1, activePair: 0, time: "Утро", players: initialPlayers, activePlayerCount: 4, npcPositions: initialNpcPositions, npcOwners: {}, npcServiceUsed: {}, npcMoveRounds: { gm: 0, role: -1 }, edges: initialEdges, tunnelEvents: {}, notes: {}, swallowedStations: [], blackThread: { active: false, everyRounds: 2, lastRound: 0 }, log: ["Тестовая партия создана: 2 пары, 4 личных экрана. Утро."] };
 
 function gameFromNetwork(state: NetworkSession): GameState {
   return {
@@ -183,6 +185,7 @@ function gameFromNetwork(state: NetworkSession): GameState {
     npcServiceUsed: { ...state.world.npcServiceUsed },
     npcMoveRounds: { ...state.world.npcMoveRounds },
     edges: { ...initialEdges, ...state.world.edges },
+    tunnelEvents: { ...(state.world.tunnelEvents || {}) },
     notes: { ...state.world.notes },
     swallowedStations: [...state.world.swallowedStations],
     blackThread: { ...state.world.blackThread },
@@ -199,6 +202,7 @@ function snapshotFromGame(game: GameState): GmConsoleSnapshot {
     players: game.players.map((player) => ({ ...player, lostLimbs: [...player.lostLimbs] })),
     world: {
       edges: { ...game.edges },
+      tunnelEvents: { ...game.tunnelEvents },
       npcPositions: { ...game.npcPositions },
       npcOwners: { ...game.npcOwners },
       npcServiceUsed: { ...game.npcServiceUsed },
@@ -250,7 +254,7 @@ function loadState(): GameState {
   if (typeof window === "undefined") return initialState;
   try {
     const parsed = JSON.parse(localStorage.getItem("metro-game-console-v5") || "null");
-    return parsed ? { ...initialState, ...parsed, players: initialPlayers.map((player, index) => { const stored = parsed.players?.[index]; return { ...player, ...(stored || {}), lostLimbs: Array.isArray(stored?.lostLimbs) ? stored.lostLimbs : [] }; }), npcPositions: { ...initialNpcPositions, ...(parsed.npcPositions || {}) }, npcOwners: parsed.npcOwners || {}, npcServiceUsed: parsed.npcServiceUsed || {}, npcMoveRounds: { ...initialState.npcMoveRounds, ...(parsed.npcMoveRounds || {}) }, edges: { ...initialEdges, ...(parsed.edges || {}) }, swallowedStations: Array.isArray(parsed.swallowedStations) ? parsed.swallowedStations : [], blackThread: { ...initialState.blackThread, ...(parsed.blackThread || {}) } } : initialState;
+    return parsed ? { ...initialState, ...parsed, players: initialPlayers.map((player, index) => { const stored = parsed.players?.[index]; return { ...player, ...(stored || {}), lostLimbs: Array.isArray(stored?.lostLimbs) ? stored.lostLimbs : [] }; }), npcPositions: { ...initialNpcPositions, ...(parsed.npcPositions || {}) }, npcOwners: parsed.npcOwners || {}, npcServiceUsed: parsed.npcServiceUsed || {}, npcMoveRounds: { ...initialState.npcMoveRounds, ...(parsed.npcMoveRounds || {}) }, edges: { ...initialEdges, ...(parsed.edges || {}) }, tunnelEvents: { ...(parsed.tunnelEvents || {}) }, swallowedStations: Array.isArray(parsed.swallowedStations) ? parsed.swallowedStations : [], blackThread: { ...initialState.blackThread, ...(parsed.blackThread || {}) } } : initialState;
   } catch { return initialState; }
 }
 
@@ -349,7 +353,7 @@ export function GameConsole({ network, networkControls }: { network?: NetworkBri
       {tab === "map" && <MapPanel game={game} setGame={setGame} addLog={addLog} onCloseSafe={closeRandomSafe} />}
       {tab === "players" && <PlayersPanel game={game} setGame={setGame} addLog={addLog} />}
       {tab === "npc" && <NpcPanel game={game} setGame={setGame} addLog={addLog} />}
-      {tab === "wheel" && <ChallengeDeckPanel addLog={addLog} time={game.time} />}
+      {tab === "wheel" && <ChallengeDeckPanel game={game} setGame={setGame} addLog={addLog} time={game.time} />}
       {tab === "crisis" && <CrisisPanel addLog={addLog} />}
       {tab === "death" && <DeathPanel addLog={addLog} />}
       {tab === "log" && <LogPanel game={game} setGame={setGame} />}
@@ -600,16 +604,31 @@ function CrisisPanel({addLog}:{addLog:(s:string)=>void}) {
   </section>;
 }
 
-function ChallengeDeckPanel({ addLog, time }: { addLog: (s: string) => void; time: TimeOfDay }) {
+function ChallengeDeckPanel({ game, setGame, addLog, time }: { game: GameState; setGame: React.Dispatch<React.SetStateAction<GameState>>; addLog: (s: string) => void; time: TimeOfDay }) {
   const [view, setView] = useState<"challenge" | "items">("challenge");
   const [card, setCard] = useState<ChallengeCard | null>(null);
+  const [selectedTrack, setSelectedTrack] = useState("");
+  const [quiet, setQuiet] = useState(false);
   const [itemId, setItemId] = useState("");
   const [proposal, setProposal] = useState("");
   const [ruling, setRuling] = useState<"Одобрено" | "Одобрено с ценой" | "Последствие / отказ" | null>(null);
+  const chooseTrack = (key: string) => {
+    setSelectedTrack(key);
+    const remembered = game.tunnelEvents[key];
+    setQuiet(remembered === quietTunnelEvent);
+    setCard(remembered && remembered !== quietTunnelEvent ? challengeCards.find((entry) => entry.id === remembered) || null : null);
+    setItemId(""); setProposal(""); setRuling(null);
+  };
   const draw = () => {
-    const next = challengeCards[Math.floor(Math.random() * challengeCards.length)];
+    if (!selectedTrack) return;
+    const remembered = Boolean(game.tunnelEvents[selectedTrack]);
+    const eventId = revealTunnelEvent({ ...game.tunnelEvents }, selectedTrack, game.edges[selectedTrack] || "normal");
+    setGame((current) => ({ ...current, tunnelEvents: { ...current.tunnelEvents, [selectedTrack]: eventId } }));
+    setQuiet(eventId === quietTunnelEvent);
+    const next = eventId === quietTunnelEvent ? null : challengeCards.find((entry) => entry.id === eventId) || null;
     setCard(next); setItemId(""); setProposal(""); setRuling(null);
-    addLog(`Открыто испытание «${next.title}» (${next.category}).`);
+    const route = tunnelEdges.flatMap((edge) => (["forward", "backward"] as Direction[]).map((direction) => ({ key: trackKey(edge.id, direction), label: trackName(edge, direction) }))).find((entry) => entry.key === selectedTrack)?.label || selectedTrack;
+    addLog(eventId === quietTunnelEvent ? `${route}: закреплён тихий проход.` : `${route}: ${remembered ? "повторно открыто" : "закреплено"} испытание «${next?.title}».`);
   };
   const decide = (decision: "Одобрено" | "Одобрено с ценой" | "Последствие / отказ") => {
     if (!card) return;
@@ -617,7 +636,7 @@ function ChallengeDeckPanel({ addLog, time }: { addLog: (s: string) => void; tim
     const item = itemCards.find((entry) => entry.id === itemId)?.title;
     addLog(`Испытание «${card.title}»: ${decision.toLowerCase()}${item ? ` · предъявлен предмет «${item}»` : ""}${proposal.trim() ? ` · решение: ${proposal.trim()}` : ""}.`);
   };
-  return <section className="tool-page card-deck-page"><div className="tool-intro"><p className="eyebrow">Ролевые испытания · общее время: {time}</p><h2>Карточки тоннелей</h2><p>Карточка задаёт ситуацию и открытый вопрос. Игроки предлагают предмет, способность или отыгранное решение; ведущая вручную принимает его, назначает цену либо последствие.</p>{time === "Ночь" && <div className="night-warning">Ночь: ведущая может усиливать последствия. Это ориентир для сцены, а не автоматическая проверка.</div>}</div><div className="deck-switch"><button className={view === "challenge" ? "active" : ""} onClick={() => setView("challenge")}>Испытания · {challengeCards.length}</button><button className={view === "items" ? "active" : ""} onClick={() => setView("items")}>Предметы · {itemCards.length}</button></div>{view === "challenge" ? <div className="challenge-layout"><section className="challenge-card">{card ? <><div className="challenge-card-head"><span>{card.category}</span><small>{card.id}</small></div><h3>{card.title}</h3><p className="challenge-scene">{card.scene}</p><div className="challenge-question"><span>Открытый вопрос</span><strong>{card.question}</strong></div><div className="counter-list"><span>Ориентиры, не ограничение</span>{card.counters.map((counter) => <b key={counter}>{counter}</b>)}</div><div className="challenge-stakes"><p><span>Если решения нет</span>{card.consequence}</p>{card.reward && <p className="reward"><span>Возможная награда</span>{card.reward}</p>}</div></> : <div className="result-empty"><strong>Колода готова</strong><p>Откройте случайную ситуацию, когда отряд входит в опасный или неизвестный тоннель. Никакого правильного ответа внутри сайта нет.</p></div>}<button className="primary full" onClick={draw}>{card ? "Следующая карточка" : "Открыть карточку"}</button></section><section className="ruling-panel"><p className="side-label">Решение отряда</p><label>Предъявленный предмет<select value={itemId} onChange={(event) => setItemId(event.target.value)}><option value="">Без карточки предмета</option>{itemCards.map((item) => <option key={item.id} value={item.id}>{item.title} · {item.cost} патр.</option>)}</select></label><label>Предложение или отыгрыш<textarea value={proposal} onChange={(event) => setProposal(event.target.value)} placeholder="Например: натягиваем тент, отводим воду проволокой и сначала переводим раненого…" /></label><div className="ruling-buttons"><button disabled={!card} onClick={() => decide("Одобрено")}>Одобрить</button><button disabled={!card} onClick={() => decide("Одобрено с ценой")}>С ценой</button><button disabled={!card} onClick={() => decide("Последствие / отказ")}>Последствие</button></div>{ruling && <div className="ruling-result"><span>Решение ведущей</span><strong>{ruling}</strong><p>Записано в журнал. Предложенные контрмеры на карточке не являются белым списком.</p></div>}<div className="rule-note"><span>Ручное решение</span><p>Хороший отыгрыш может сработать без предмета. Предмет тоже не гарантирует успех, если способ применения не объяснён.</p></div></section></div> : <div className="item-library">{itemCards.map((item) => <article key={item.id}><div><span>{item.category}</span><b>{item.cost} патр.</b></div><h3>{item.title}</h3><p>{item.description}</p><div className="item-tags">{item.tags.map((tag) => <i key={tag}>{tag}</i>)}</div><ul>{item.examples.map((example) => <li key={example}>{example}</li>)}</ul></article>)}</div>}</section>;
+  return <section className="tool-page card-deck-page"><div className="tool-intro"><p className="eyebrow">Ролевые испытания · общее время: {time}</p><h2>Карточки тоннелей</h2><p>Выберите конкретное направление тоннеля. При первом проходе событие выпадает случайно и закрепляется за этим тоннелем до конца партии; повторный проход всегда откроет ту же карточку.</p>{time === "Ночь" && <div className="night-warning">Ночь: ведущая может усиливать последствия. Это ориентир для сцены, а не автоматическая проверка.</div>}</div><label className="challenge-track-picker">Тоннель и направление<select value={selectedTrack} onChange={(event) => chooseTrack(event.target.value)}><option value="">Выберите тоннель…</option>{tunnelEdges.flatMap((edge) => (["forward", "backward"] as Direction[]).map((direction) => <option key={trackKey(edge.id, direction)} value={trackKey(edge.id, direction)}>{trackName(edge, direction)}{game.tunnelEvents[trackKey(edge.id, direction)] ? " · уже разведан" : ""}</option>))}</select></label><div className="deck-switch"><button className={view === "challenge" ? "active" : ""} onClick={() => setView("challenge")}>Испытания · {challengeCards.length}</button><button className={view === "items" ? "active" : ""} onClick={() => setView("items")}>Предметы · {itemCards.length}</button></div>{view === "challenge" ? <div className="challenge-layout"><section className="challenge-card">{card ? <><div className="challenge-card-head"><span>{card.category}</span><small>{card.id}</small></div><h3>{card.title}</h3><p className="challenge-scene">{card.scene}</p><div className="challenge-question"><span>Открытый вопрос</span><strong>{card.question}</strong></div><div className="counter-list"><span>Ориентиры, не ограничение</span>{card.counters.map((counter) => <b key={counter}>{counter}</b>)}</div><div className="challenge-stakes"><p><span>Если решения нет</span>{card.consequence}</p>{card.reward && <p className="reward"><span>Возможная награда</span>{card.reward}</p>}</div></> : quiet ? <div className="result-empty"><strong>Тихий проход</strong><p>В этом направлении испытания нет. Результат закреплён за тоннелем до конца текущей партии.</p></div> : <div className="result-empty"><strong>{selectedTrack ? "Тоннель ещё не разведан" : "Выберите тоннель"}</strong><p>{selectedTrack ? "Первое открытие определит его постоянное событие для этой партии." : "Каждое направление считается отдельным тоннелем и запоминает собственную карточку."}</p></div>}<button className="primary full" disabled={!selectedTrack} onClick={draw}>{game.tunnelEvents[selectedTrack] ? "Показать закреплённое событие" : "Открыть и закрепить событие"}</button></section><section className="ruling-panel"><p className="side-label">Решение отряда</p><label>Предъявленный предмет<select value={itemId} onChange={(event) => setItemId(event.target.value)}><option value="">Без карточки предмета</option>{itemCards.map((item) => <option key={item.id} value={item.id}>{item.title} · {item.cost} патр.</option>)}</select></label><label>Предложение или отыгрыш<textarea value={proposal} onChange={(event) => setProposal(event.target.value)} placeholder="Например: натягиваем тент, отводим воду проволокой и сначала переводим раненого…" /></label><div className="ruling-buttons"><button disabled={!card} onClick={() => decide("Одобрено")}>Одобрить</button><button disabled={!card} onClick={() => decide("Одобрено с ценой")}>С ценой</button><button disabled={!card} onClick={() => decide("Последствие / отказ")}>Последствие</button></div>{ruling && <div className="ruling-result"><span>Решение ведущей</span><strong>{ruling}</strong><p>Записано в журнал. Предложенные контрмеры на карточке не являются белым списком.</p></div>}<div className="rule-note"><span>Ручное решение</span><p>Хороший отыгрыш может сработать без предмета. Предмет тоже не гарантирует успех, если способ применения не объяснён.</p></div></section></div> : <div className="item-library">{itemCards.map((item) => <article key={item.id}><div><span>{item.category}</span><b>{item.cost} патр.</b></div><h3>{item.title}</h3><p>{item.description}</p><div className="item-tags">{item.tags.map((tag) => <i key={tag}>{tag}</i>)}</div><ul>{item.examples.map((example) => <li key={example}>{example}</li>)}</ul></article>)}</div>}</section>;
 }
 
 function DeathPanel({ addLog }: { addLog: (s: string) => void }) {

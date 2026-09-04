@@ -11,6 +11,7 @@ import { metroData } from "./metro-data";
 import { healthRatio, MetroNetworkMap, RolePortrait } from "./network-console";
 import { createDemoSession, type NetworkPlayer, type NetworkSession, type PlayerIntent, type SessionTime } from "./network-session";
 import { scenarioEdgeMarks, stationResources } from "./scenario-data";
+import { directedTunnelEventKey, quietTunnelEvent, revealTunnelEvent } from "./tunnel-events";
 
 type SoloPhase = "setup" | "planning" | "challenge" | "cordon" | "summary" | "won" | "dead";
 type SoloStats = {
@@ -89,10 +90,6 @@ function bestStep(position:string,session:NetworkSession,seed:number){
   const best=options.filter(option=>distance(option.target,session)<=distance(options[0]?.target||position,session)+1);
   return best.length?best[seed%best.length].target:null;
 }
-function pickChallenge(exclude:string[]=[]){
-  const pool=challengeCards.filter(card=>!exclude.includes(card.id)&&card.id!=="people-01");
-  return pool[Math.floor(Math.random()*pool.length)]||challengeCards[0];
-}
 function freshSave(humanId:number):SoloSave{
   const session=createDemoSession("VOICE26");session.playerCount=12;session.status="playing";session.gmMessage="Один из голосов принадлежит вам. Остальные путники идут своим маршрутом.";
   session.crisisStatus="inactive";
@@ -120,7 +117,7 @@ function addResource(player:NetworkPlayer,session:NetworkSession,report:string[]
   else if(human)report.push("Вы открыли локальную сцену станции. Механической добычи здесь нет.");
 }
 function finishTurn(save:SoloSave,outcome:TurnOutcome):SoloSave{
-  const session={...save.session,world:{...save.session.world,edges:{...save.session.world.edges}},players:save.session.players.map(player=>({...player,inventory:[...player.inventory],lostLimbs:[...player.lostLimbs]}))};
+  const session={...save.session,world:{...save.session.world,edges:{...save.session.world.edges},tunnelEvents:{...(save.session.world.tunnelEvents||{})}},players:save.session.players.map(player=>({...player,inventory:[...player.inventory],lostLimbs:[...player.lostLimbs]}))};
   const human=session.players[save.humanId-1];const report:string[]=[];
   const botsAlreadyAtPolis=session.players.filter(player=>player.id!==save.humanId&&polisIds.has(player.position)).length;
   const stats:SoloStats={...save.stats,visited:[...save.stats.visited]};
@@ -165,7 +162,7 @@ function finishTurn(save:SoloSave,outcome:TurnOutcome):SoloSave{
 export function SoloConsole(){
   const [save,setSave]=useState<SoloSave|null>(null);const [selectedRole,setSelectedRole]=useState(roleCards[0].id);
   const [musicOn,setMusicOn]=useState(false);const audioRef=useRef<AudioContext|null>(null);const musicTimerRef=useRef<number|null>(null);
-  useEffect(()=>{const raw=localStorage.getItem(soloStorageKey);if(raw){try{const parsed=JSON.parse(raw) as SoloSave;const position=parsed.session.players[parsed.humanId-1]?.position||"";setSave({...parsed,session:{...parsed.session,crisisStatus:"inactive"},pendingTarget:parsed.pendingTarget||null,pendingEdgeId:parsed.pendingEdgeId||null,soloGoalId:parsed.soloGoalId||randomSoloGoal(),stats:{...emptySoloStats(position),...(parsed.stats||{}),visited:parsed.stats?.visited||[position]},finishRank:parsed.finishRank||null});}catch{/* Повреждённое локальное сохранение игнорируется. */}}},[]);
+  useEffect(()=>{const raw=localStorage.getItem(soloStorageKey);if(raw){try{const parsed=JSON.parse(raw) as SoloSave;const position=parsed.session.players[parsed.humanId-1]?.position||"";setSave({...parsed,session:{...parsed.session,crisisStatus:"inactive",world:{...parsed.session.world,tunnelEvents:{...(parsed.session.world.tunnelEvents||{})}}},pendingTarget:parsed.pendingTarget||null,pendingEdgeId:parsed.pendingEdgeId||null,soloGoalId:parsed.soloGoalId||randomSoloGoal(),stats:{...emptySoloStats(position),...(parsed.stats||{}),visited:parsed.stats?.visited||[position]},finishRank:parsed.finishRank||null});}catch{/* Повреждённое локальное сохранение игнорируется. */}}},[]);
   useEffect(()=>{if(save)localStorage.setItem(soloStorageKey,JSON.stringify(save));},[save]);
   useEffect(()=>()=>{if(musicTimerRef.current!=null)window.clearInterval(musicTimerRef.current);void audioRef.current?.close();},[]);
   const toggleMusic=async()=>{
@@ -208,7 +205,7 @@ export function SoloConsole(){
   };
   const choose=(intent:Exclude<PlayerIntent,null>,target:string|null,edge?:MetroEdge,status?:string)=>setSave(current=>{
     if(!current||current.phase!=="planning")return current;
-    const session:NetworkSession={...current.session,phase:"reveal",players:current.session.players.map(player=>({...player}))};prepareBots(session,current.humanId,intent,target);
+    const session:NetworkSession={...current.session,phase:"reveal",world:{...current.session.world,tunnelEvents:{...(current.session.world.tunnelEvents||{})}},players:current.session.players.map(player=>({...player}))};prepareBots(session,current.humanId,intent,target);
     if(intent==="stay")return finishTurn({...current,session}, {move:false});
     if(!edge||!target)return current;
     const pending={...current,session,pendingTarget:target,pendingEdgeId:edge.id};
@@ -218,10 +215,13 @@ export function SoloConsole(){
       const reward=Math.random()<.5?commonRewards[Math.floor(Math.random()*commonRewards.length)]:undefined;
       return finishTurn(pending,{move:true,quiet:true,rewardItem:reward,note:`Вы прошли тоннель вместе с караваном «${caravan.name}». Караван мистически миновал все преграды, испытание не проводилось.${reward?" Погонщик оставил вам полезную вещь.":" Путь обошёлся без происшествий."}`});
     }
-    const quietChance=status==="safe"?.45:.10;
-    if(Math.random()<quietChance)return finishTurn(pending,{move:true,quiet:true,note:status==="safe"?"Безопасный тоннель оказался тихим: вы прошли без испытания.":"Обычный пустой перегон: в этот раз ничего не произошло."});
-    const challenge=pickChallenge();session.phase="challenge";session.activeChallenge=challenge.id;
-    return {...pending,session,phase:"challenge",report:["Событие тоннеля открыто."]};
+    const eventKey=directedTunnelEventKey(edge,current.session.players[current.humanId-1].position,target);
+    if(!eventKey)return current;
+    const remembered=Boolean(session.world.tunnelEvents[eventKey]);
+    const eventId=revealTunnelEvent(session.world.tunnelEvents,eventKey,status||"normal");
+    if(eventId===quietTunnelEvent)return finishTurn(pending,{move:true,quiet:true,note:remembered?"Вы снова прошли знакомый тихий тоннель без испытания.":status==="safe"?"Безопасный тоннель оказался тихим: теперь в этой партии он всегда даёт спокойный проход.":"Пустой перегон: теперь в этой партии он всегда остаётся тихим."});
+    session.phase="challenge";session.activeChallenge=eventId;
+    return {...pending,session,phase:"challenge",report:[remembered?"Знакомое событие тоннеля повторилось.":"Событие тоннеля открыто и закреплено за ним до конца партии."]};
   });
   const resolveOption=(option:ChallengeOption)=>setSave(current=>{
     if(!current||!currentChallenge)return current;

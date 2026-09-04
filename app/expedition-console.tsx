@@ -10,6 +10,7 @@ import { metroData } from "./metro-data";
 import { healthRatio, MetroNetworkMap, RolePortrait } from "./network-console";
 import { createDemoSession, type NetworkPlayer, type NetworkSession, type SessionTime } from "./network-session";
 import { scenarioEdgeMarks, stationResources } from "./scenario-data";
+import { directedTunnelEventKey, quietTunnelEvent, revealTunnelEvent } from "./tunnel-events";
 
 type MetroEdge = { id: string; source: string; target: string; type: string; color: string };
 type SetupPlayer = { name: string; roleId: string; start: string };
@@ -162,6 +163,7 @@ function cloneSession(session: NetworkSession): NetworkSession {
     world: {
       ...session.world,
       edges: { ...session.world.edges },
+      tunnelEvents: { ...(session.world.tunnelEvents || {}) },
       npcPositions: { ...session.world.npcPositions },
       npcOwners: { ...session.world.npcOwners },
       npcServiceUsed: { ...session.world.npcServiceUsed },
@@ -220,6 +222,10 @@ function normalizedSave(save: ExpeditionSave): ExpeditionSave {
     botControlledIds: save.botControlledIds || [],
     stats: save.stats || Object.fromEntries(save.session.players.map((player) => [player.id, { ...emptyStats(), visited: [player.position] }])),
     roleUses: save.roleUses || {},
+    session: {
+      ...save.session,
+      world: { ...save.session.world, tunnelEvents: { ...(save.session.world.tunnelEvents || {}) } },
+    },
   };
 }
 
@@ -375,12 +381,15 @@ function choosePath(base: ExpeditionSave, target: string | null, edgeId?: string
     player.inventory.splice(npcPass, 1);
     return finishTurn(pending, { move: true, note: `${player.name} использовал помощь NPC и безопасно прошёл тоннель.` });
   }
-  const quietChance = passage.status === "safe" ? 0.45 : 0.1;
-  if (Math.random() < quietChance) return finishTurn(pending, { move: true, note: "Тоннель оказался тихим. Переход прошёл без испытания." });
-  const pool = challengeCards.filter((card) => card.id !== "people-01");
-  const card = pool[Math.floor(Math.random() * pool.length)];
-  session.activeChallenge = card.id;
-  return { ...pending, session, phase: "challenge", report: [...base.report, "Открыта карта тоннеля."] };
+  const eventKey = directedTunnelEventKey(passage.edge, player.position, target);
+  if (!eventKey) return base;
+  const remembered = Boolean(session.world.tunnelEvents[eventKey]);
+  const eventId = revealTunnelEvent(session.world.tunnelEvents, eventKey, passage.status);
+  if (eventId === quietTunnelEvent) {
+    return finishTurn(pending, { move: true, note: remembered ? "Знакомый тихий тоннель снова пропустил путника без испытания." : "Тоннель оказался тихим и останется таким до конца этой партии." });
+  }
+  session.activeChallenge = eventId;
+  return { ...pending, session, phase: "challenge", report: [...base.report, remembered ? "Знакомое событие тоннеля повторилось." : "Карта события открыта и закреплена за этим тоннелем до конца партии."] };
 }
 
 function resolveCordon(baseInput: ExpeditionSave, mode: "pay" | "inspection" | "pass" | "retreat"): ExpeditionSave {

@@ -1,4 +1,6 @@
 import { scenarioEdgeMarks, scenarioNpcPositions } from "./scenario-data";
+import { metroData } from "./metro-data";
+import { directedTunnelEventKey, quietTunnelEvent, revealTunnelEvent } from "./tunnel-events";
 
 export type SessionTime = "Утро" | "День" | "Вечер" | "Ночь";
 export type SessionPhase = "planning" | "reveal" | "challenge" | "resolution";
@@ -23,6 +25,7 @@ export type NetworkPlayer = {
 
 export type NetworkWorld = {
   edges: Record<string, "normal" | "safe" | "unknown" | "closed">;
+  tunnelEvents: Record<string, string>;
   npcPositions: Record<string, string>;
   npcOwners: Record<string, number | null>;
   npcServiceUsed: Record<string, boolean>;
@@ -129,6 +132,7 @@ const inventories = [
 function createInitialWorld(): NetworkWorld {
   return {
     edges: { ...scenarioEdgeMarks },
+    tunnelEvents: {},
     npcPositions: { ...scenarioNpcPositions, "npc-26": "2::новокузнецкая", "npc-27": "6::китай-город" },
     npcOwners: {},
     npcServiceUsed: {},
@@ -152,6 +156,7 @@ export function normalizeSession(stored: NetworkSession): NetworkSession {
       ...defaults,
       ...world,
       edges: { ...defaults.edges, ...(world.edges || {}) },
+      tunnelEvents: { ...(world.tunnelEvents || {}) },
       npcPositions: { ...defaults.npcPositions, ...(world.npcPositions || {}) },
       npcOwners: world.npcOwners || {},
       npcServiceUsed: world.npcServiceUsed || {},
@@ -208,6 +213,27 @@ export type SessionAction =
 
 const timeCycle: SessionTime[] = ["Утро", "День", "Вечер", "Ночь"];
 const phaseCycle: SessionPhase[] = ["planning", "reveal", "challenge", "resolution"];
+const sessionEdges = metroData.edges as readonly { id: string; source: string; target: string; type: string }[];
+
+function activePairTunnelKeys(state: NetworkSession, pair = state.activePair) {
+  return state.players
+    .slice(0, state.playerCount)
+    .filter((player) => player.pair === pair && player.intent === "tunnel" && player.target)
+    .flatMap((player) => {
+      const edge = sessionEdges.find((entry) =>
+        (entry.source === player.position && entry.target === player.target)
+        || (entry.target === player.position && entry.source === player.target));
+      if (!edge || edge.type === "transfer") return [];
+      const key = directedTunnelEventKey(edge, player.position, player.target!);
+      return key ? [{ key, status: state.world.edges[key] || "normal" }] : [];
+    })
+    .filter((entry, index, list) => list.findIndex((candidate) => candidate.key === entry.key) === index);
+}
+
+function revealActivePairChallenge(state: NetworkSession) {
+  const revealed = activePairTunnelKeys(state).map(({ key, status }) => revealTunnelEvent(state.world.tunnelEvents, key, status));
+  state.activeChallenge = revealed.find((eventId) => eventId !== quietTunnelEvent) || null;
+}
 
 export function applySessionAction(state: NetworkSession, action: SessionAction, viewer: Viewer): NetworkSession {
   if (action.type.startsWith("gm-") && viewer.kind !== "gm") throw new Error("Недостаточно прав для действия ведущей.");
@@ -219,7 +245,12 @@ export function applySessionAction(state: NetworkSession, action: SessionAction,
     if (viewer.kind === "squad") return state.players[playerId - 1]?.pair === viewer.pair;
     return false;
   };
-  let next: NetworkSession = { ...state, players: state.players.map((player) => ({ ...player })), updatedAt: Date.now() };
+  let next: NetworkSession = {
+    ...state,
+    players: state.players.map((player) => ({ ...player })),
+    world: { ...state.world, tunnelEvents: { ...(state.world.tunnelEvents || {}) } },
+    updatedAt: Date.now(),
+  };
   const addLog = (text: string) => { next = { ...next, log: [logEntry(text), ...next.log].slice(0, 120) }; };
 
   switch (action.type) {
@@ -265,6 +296,7 @@ export function applySessionAction(state: NetworkSession, action: SessionAction,
         addLog(`Начался раунд ${next.round}. Общее время: ${next.time}.`);
       } else {
         next.phase = phaseCycle[phaseIndex + 1];
+        if (next.phase === "challenge") revealActivePairChallenge(next);
         addLog(`Фаза изменена: ${next.phase}.`);
       }
       break;
@@ -279,13 +311,23 @@ export function applySessionAction(state: NetworkSession, action: SessionAction,
         addLog("Все отряды завершили действия. Раунд автоматически перешёл к итогам.");
       }else{
         next.activePair=Array.from({length:totalPairs},(_,index)=>index+1).find((pair)=>!next.resolvedPairs.includes(pair))||1;
-        next.activeChallenge=null;
+        revealActivePairChallenge(next);
       }
       break;
     }
     case "gm-set-status": next.status = action.status; addLog(`Статус партии: ${action.status}.`); break;
     case "gm-set-message": next.gmMessage = action.message.slice(0, 220); break;
-    case "gm-set-challenge": next.activeChallenge = action.challengeId; addLog(action.challengeId ? "Ведущая открыла испытание." : "Испытание закрыто."); break;
+    case "gm-set-challenge": {
+      const keys = activePairTunnelKeys(next);
+      const fixed = keys.map(({ key }) => next.world.tunnelEvents[key]).find(Boolean);
+      if (fixed) next.activeChallenge = fixed === quietTunnelEvent ? null : fixed;
+      else {
+        next.activeChallenge = action.challengeId;
+        if (action.challengeId && keys[0]) next.world.tunnelEvents[keys[0].key] = action.challengeId;
+      }
+      addLog(next.activeChallenge ? "Ведущая открыла закреплённое испытание тоннеля." : "Испытание закрыто.");
+      break;
+    }
     case "gm-set-crisis": {
       next.crisisStatus = action.status;
       addLog(action.status === "active"
@@ -295,7 +337,11 @@ export function applySessionAction(state: NetworkSession, action: SessionAction,
           : "Кризис возвращён в ожидание.");
       break;
     }
-    case "gm-set-active-pair": next.activePair = Math.max(1, Math.min(next.playerCount / 2, action.pair)); break;
+    case "gm-set-active-pair": {
+      next.activePair = Math.max(1, Math.min(next.playerCount / 2, action.pair));
+      if (next.phase === "challenge") revealActivePairChallenge(next);
+      break;
+    }
     case "gm-set-player-count": next.playerCount = action.count; next.activePair = 1; addLog(action.count === 4 ? "Включён тестовый режим: две пары." : "Включена полная партия: шесть пар."); break;
     case "gm-adjust-bullets": {
       const player = next.players[action.playerId - 1];
@@ -331,6 +377,7 @@ export function applySessionAction(state: NetworkSession, action: SessionAction,
         ...next.world,
         ...snapshot.world,
         edges: { ...snapshot.world.edges },
+        tunnelEvents: { ...(snapshot.world.tunnelEvents || {}) },
         npcPositions: { ...snapshot.world.npcPositions },
         npcOwners: { ...snapshot.world.npcOwners },
         npcServiceUsed: { ...snapshot.world.npcServiceUsed },
@@ -356,6 +403,7 @@ export function projectSession(state: NetworkSession, viewer: Viewer) {
     activeChallenge: canSeeChallenge ? state.activeChallenge : null,
     world: {
       ...state.world,
+      tunnelEvents: {},
       notes: {},
       gmLog: [],
     },
