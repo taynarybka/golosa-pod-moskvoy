@@ -18,6 +18,8 @@ export type NetworkPlayer = {
   inventory: string[];
   intent: PlayerIntent;
   target: string | null;
+  /** Два параллельных двусторонних тоннеля: legacy-ключи forward/backward означают A/B, а не направление движения. */
+  tunnelId: "forward" | "backward" | null;
   ready: boolean;
   onlineAt: number | null;
   selectedItem: string | null;
@@ -151,7 +153,7 @@ export function normalizeSession(stored: NetworkSession): NetworkSession {
     ...stored,
     resolvedPairs: stored.resolvedPairs || [],
     crisisStatus: stored.crisisStatus || "inactive",
-    players: stored.players.map((player) => ({ ...player, health: Number.isFinite(player.health) ? player.health : 10 })),
+    players: stored.players.map((player) => ({ ...player, health: Number.isFinite(player.health) ? player.health : 10, tunnelId: player.tunnelId || null })),
     world: {
       ...defaults,
       ...world,
@@ -183,7 +185,7 @@ export function createDemoSession(code = "TEST26"): NetworkSession {
       id: index + 1, name: `Игрок ${String(index + 1).padStart(2, "0")}`,
       pair: Math.floor(index / 2) + 1, roleId, position: starts[index], bullets: bullets[index],
       health: 10, lostLimbs: [], inventory: inventories[index], intent: null, target: null,
-      ready: false, onlineAt: null, selectedItem: null,
+      ready: false, onlineAt: null, selectedItem: null, tunnelId: null,
     })),
     activeChallenge: null, crisisStatus: "inactive",
     gmMessage: "Голоса становятся тише, когда вы движетесь к Полису.",
